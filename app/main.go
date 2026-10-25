@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ var builtInCommands = map[string]bool{
 	"echo": true,
 	"type": true,
 	"pwd":  true,
+	"cd":   true,
 }
 
 func main() {
@@ -51,6 +53,15 @@ func main() {
 				fmt.Println(dir)
 			} else {
 				_, _ = fmt.Fprintln(os.Stderr, "pwd:", err)
+			}
+			continue
+		}
+		if strings.HasPrefix(command, "cd ") {
+			dir := command[3:]
+			if err := os.Chdir(dir); errors.Is(err, os.ErrNotExist) {
+				_, _ = fmt.Fprintln(os.Stderr, "cd: "+dir+": No such file or directory")
+			} else if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, "cd:", err)
 			}
 			continue
 		}
