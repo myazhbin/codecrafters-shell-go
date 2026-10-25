@@ -12,6 +12,7 @@ var builtInCommands = map[string]bool{
 	"exit": true,
 	"echo": true,
 	"type": true,
+	"pwd":  true,
 }
 
 func main() {
@@ -42,6 +43,14 @@ func main() {
 				fmt.Println(name + " is " + path)
 			} else {
 				fmt.Println(name + ": not found")
+			}
+			continue
+		}
+		if command == "pwd" {
+			if dir, err := os.Getwd(); err == nil {
+				fmt.Println(dir)
+			} else {
+				_, _ = fmt.Fprintln(os.Stderr, "pwd:", err)
 			}
 			continue
 		}
