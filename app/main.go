@@ -58,6 +58,9 @@ func main() {
 		}
 		if strings.HasPrefix(command, "cd ") {
 			dir := command[3:]
+			if dir == "~" || strings.HasPrefix(dir, "~/") {
+				dir = os.Getenv("HOME") + dir[1:]
+			}
 			if err := os.Chdir(dir); errors.Is(err, os.ErrNotExist) {
 				_, _ = fmt.Fprintln(os.Stderr, "cd: "+dir+": No such file or directory")
 			} else if err != nil {
