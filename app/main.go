@@ -83,12 +83,14 @@ type tabCompleter struct {
 func (c *tabCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	typed := string(line[:pos])
 	word := typed[strings.LastIndex(typed, " ")+1:]
+	// The words before word; none when word is the command name.
+	before := strings.Fields(typed[:len(typed)-len(word)])
 	var partial string // the end of word that the names complete
 	var names []string
-	if strings.TrimLeft(typed, " ") == word {
+	if len(before) == 0 {
 		partial, names = word, commandNames(word)
-	} else if script, ok := completers[strings.Fields(typed)[0]]; ok {
-		partial, names = word, completerNames(script, word)
+	} else if script, ok := completers[before[0]]; ok {
+		partial, names = word, completerNames(script, before, word)
 	} else {
 		dir := word[:strings.LastIndex(word, "/")+1] // "" when word has no "/"
 		partial = word[len(dir):]
@@ -154,15 +156,21 @@ func commandNames(prefix string) []string {
 	return slices.Sorted(maps.Keys(names))
 }
 
-// completerNames runs script, a completer registered with complete -C, and
-// returns the lines it prints that start with prefix, sorted and without
-// duplicates.
-func completerNames(script, prefix string) []string {
-	out, _ := exec.Command(script).Output() // a script that fails prints nothing useful
+// completerNames runs script, a completer registered with complete -C, for
+// completing word after the words before it, and returns the lines it prints
+// that start with word, sorted and without duplicates. The script gets three
+// arguments: the command name, word, and the argument before word ("" when
+// word is the first).
+func completerNames(script string, before []string, word string) []string {
+	previous := ""
+	if len(before) > 1 {
+		previous = before[len(before)-1]
+	}
+	out, _ := exec.Command(script, before[0], word, previous).Output() // a failed script prints nothing useful
 	var names []string
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimRight(line, "\r")
-		if line != "" && strings.HasPrefix(line, prefix) {
+		if line != "" && strings.HasPrefix(line, word) {
 			names = append(names, line)
 		}
 	}
