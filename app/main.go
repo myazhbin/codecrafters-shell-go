@@ -63,8 +63,9 @@ func main() {
 }
 
 // tabCompleter completes the word before the cursor: the command name to a
-// builtin or a program in PATH, and any other word to a name in the current
-// directory. A completed name gets a space after it, or a "/" for a directory.
+// builtin or a program in PATH, and any other word to a file name, in the
+// directory the word names up to its last "/" or else the current directory.
+// A completed name gets a space after it, or a "/" for a directory.
 // Like bash, it rings the bell when nothing matches. When several names match,
 // it adds what they all start with; if that's nothing more, the first Tab rings
 // the bell and a second Tab in a row lists them.
@@ -76,25 +77,28 @@ type tabCompleter struct {
 func (c *tabCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	typed := string(line[:pos])
 	word := typed[strings.LastIndex(typed, " ")+1:]
+	var partial string // the end of word that the names complete
 	var names []string
 	if strings.TrimLeft(typed, " ") == word {
-		names = commandNames(word)
+		partial, names = word, commandNames(word)
 	} else {
-		names = fileNames(word)
+		dir := word[:strings.LastIndex(word, "/")+1] // "" when word has no "/"
+		partial = word[len(dir):]
+		names = fileNames(dir, partial)
 	}
-	prefix := word
+	prefix := partial
 	if len(names) > 1 {
 		prefix = commonPrefix(names)
 	}
 	switch {
 	case len(names) == 1:
-		completion := names[0][len(word):]
+		completion := names[0][len(partial):]
 		if !strings.HasSuffix(completion, "/") {
 			completion += " "
 		}
-		return [][]rune{[]rune(completion)}, len([]rune(word))
-	case len(prefix) > len(word): // the matches all go on past what was typed
-		return [][]rune{[]rune(prefix[len(word):])}, len([]rune(word))
+		return [][]rune{[]rune(completion)}, len([]rune(partial))
+	case len(prefix) > len(partial): // the matches all go on past what was typed
+		return [][]rune{[]rune(prefix[len(partial):])}, len([]rune(partial))
 	case len(names) > 1 && c.ambiguous:
 		fmt.Print("\n" + strings.Join(names, "  ") + "\n")
 		c.rl.Refresh() // show the prompt and the line again below the list
@@ -142,10 +146,13 @@ func commandNames(prefix string) []string {
 	return slices.Sorted(maps.Keys(names))
 }
 
-// fileNames returns the names in the current directory that start with prefix,
-// sorted, with a "/" after each directory.
-func fileNames(prefix string) []string {
-	entries, err := os.ReadDir(".")
+// fileNames returns the names in dir (the current directory when dir is "") that
+// start with prefix, sorted, with a "/" after each directory.
+func fileNames(dir, prefix string) []string {
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
