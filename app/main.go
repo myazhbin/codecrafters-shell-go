@@ -78,26 +78,30 @@ func main() {
 	}
 }
 
-// parseArgs splits line into arguments at unquoted spaces and tabs. Text inside
-// single or double quotes is taken literally, a backslash outside quotes makes
-// the next character literal, and adjacent pieces join into one argument.
+// parseArgs splits line into arguments at unquoted spaces and tabs. Quoted text
+// is taken literally, except that inside double quotes a backslash escapes ",
+// \, $ and `. Outside quotes, a backslash makes the next character literal.
+// Adjacent pieces join into one argument.
 func parseArgs(line string) []string {
 	var args []string
 	var arg strings.Builder
 	inArg := false   // true once an argument has started, even an empty one like ''
 	var quote rune   // the quote character we're inside, or 0 when outside quotes
-	escaped := false // the previous character was a backslash outside quotes
+	escaped := false // the previous character was a backslash outside single quotes
 	for _, r := range line {
 		switch {
 		case escaped:
+			if quote == '"' && !strings.ContainsRune("\"\\$`", r) {
+				arg.WriteRune('\\') // not an escape inside double quotes, so keep it
+			}
 			arg.WriteRune(r)
 			escaped, inArg = false, true
+		case r == '\\' && quote != '\'':
+			escaped = true
 		case quote != 0 && r == quote:
 			quote = 0
 		case quote != 0:
 			arg.WriteRune(r)
-		case r == '\\':
-			escaped = true
 		case r == '\'' || r == '"':
 			quote, inArg = r, true
 		case r == ' ' || r == '\t':
