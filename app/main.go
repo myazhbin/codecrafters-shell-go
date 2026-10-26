@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -33,7 +34,7 @@ func main() {
 	if readline.DefaultIsTerminal() {
 		rl, err := readline.NewEx(&readline.Config{
 			Prompt:       "$ ",
-			AutoComplete: builtinCompleter{},
+			AutoComplete: commandCompleter{},
 			FuncGetWidth: terminalWidth,
 		})
 		if err != nil {
@@ -58,23 +59,50 @@ func main() {
 	}
 }
 
-// builtinCompleter completes the command name at the start of the line to a
-// builtin, followed by a space, and rings the bell when nothing matches.
-type builtinCompleter struct{}
+// commandCompleter completes the command name at the start of the line to a
+// builtin or a program in PATH, followed by a space, and rings the bell when
+// nothing matches.
+type commandCompleter struct{}
 
-func (builtinCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+func (commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	word := strings.TrimLeft(string(line[:pos]), " ")
 	if !strings.Contains(word, " ") { // only the command name is completed
-		for _, name := range slices.Sorted(maps.Keys(builtInCommands)) {
-			if strings.HasPrefix(name, word) {
-				newLine = append(newLine, []rune(name[len(word):]+" "))
-			}
+		for _, name := range commandNames(word) {
+			newLine = append(newLine, []rune(name[len(word):]+" "))
 		}
 	}
 	if len(newLine) == 0 {
 		fmt.Print("\a")
 	}
-	return newLine, len(word)
+	return newLine, len([]rune(word))
+}
+
+// commandNames returns the builtins and the programs in PATH whose names start
+// with prefix, sorted and without duplicates.
+func commandNames(prefix string) []string {
+	names := map[string]bool{}
+	for name := range builtInCommands {
+		if strings.HasPrefix(name, prefix) {
+			names[name] = true
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue // PATH can list directories that don't exist
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, prefix) || names[name] {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(dir, name))
+			if err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+				names[name] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
 }
 
 // terminalWidth returns the terminal's width in columns, or 80 when it reports
