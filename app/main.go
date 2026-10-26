@@ -159,15 +159,11 @@ func commandNames(prefix string) []string {
 // completerNames runs script, a completer registered with complete -C, for
 // completing word after the words before it in commandLine, with the cursor at
 // byte offset point, and returns the lines it prints that start with word,
-// sorted and without duplicates. The script gets three arguments: the command
-// name, word, and the argument before word ("" when word is the first); and,
-// as in bash, commandLine and point in COMP_LINE and COMP_POINT.
+// sorted and without duplicates. As in bash, the script gets the command name,
+// word, and the word before word (the command name for the first argument) as
+// arguments, and commandLine and point in COMP_LINE and COMP_POINT.
 func completerNames(script string, before []string, word, commandLine string, point int) []string {
-	previous := ""
-	if len(before) > 1 {
-		previous = before[len(before)-1]
-	}
-	cmd := exec.Command(script, before[0], word, previous)
+	cmd := exec.Command(script, before[0], word, before[len(before)-1])
 	cmd.Env = append(os.Environ(), "COMP_LINE="+commandLine, fmt.Sprintf("COMP_POINT=%d", point))
 	out, _ := cmd.Output() // a failed script prints nothing useful
 	var names []string
