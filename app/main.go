@@ -24,7 +24,7 @@ var builtInCommands = map[string]bool{
 }
 
 // completers maps a command name to the program registered with complete -C to
-// suggest completions for that command.
+// suggest completions for that command, until complete -r removes it.
 var completers = map[string]string{}
 
 func main() {
@@ -293,6 +293,13 @@ func runCommand(line string) (exit bool) {
 		case len(args) > 2 && args[1] == "-C":
 			for _, name := range args[3:] {
 				completers[name] = args[2]
+			}
+		case len(args) > 1 && args[1] == "-r":
+			if len(args) == 2 {
+				clear(completers) // as in bash, no names means every command
+			}
+			for _, name := range args[2:] {
+				delete(completers, name) // unlike bash, says nothing when there's none
 			}
 		}
 	default:
