@@ -21,6 +21,7 @@ var builtInCommands = map[string]bool{
 	"pwd":      true,
 	"cd":       true,
 	"complete": true,
+	"jobs":     true,
 }
 
 // completers maps a command name to the program registered with complete -C to
@@ -302,6 +303,8 @@ func runCommand(line string) (exit bool) {
 				delete(completers, name) // unlike bash, says nothing when there's none
 			}
 		}
+	case "jobs":
+		// Nothing runs in the background yet, so there are no jobs to list.
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
