@@ -31,7 +31,8 @@ var completers = map[string]string{}
 // job is a program started in the background with &.
 type job struct {
 	number  int
-	command string // the command line that started it, without the &
+	command string        // the command line that started it, without the &
+	done    chan struct{} // closed once the program has exited
 }
 
 // jobs are the background jobs, oldest first.
@@ -315,8 +316,9 @@ func runCommand(line string) (exit bool) {
 			}
 		}
 	case "jobs":
-		// Every job shows as running, since the shell doesn't notice yet when
-		// one ends. As in bash, + marks the newest job and - the one before it.
+		// As in bash, + marks the newest job and - the one before it, and a job
+		// that has ended is listed as Done this once, then dropped.
+		var running []job
 		for i, j := range jobs {
 			marker := " "
 			if i == len(jobs)-1 {
@@ -324,8 +326,15 @@ func runCommand(line string) (exit bool) {
 			} else if i == len(jobs)-2 {
 				marker = "-"
 			}
-			_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s &\n", j.number, marker, "Running", j.command)
+			select {
+			case <-j.done:
+				_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s\n", j.number, marker, "Done", j.command)
+			default:
+				_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s &\n", j.number, marker, "Running", j.command)
+				running = append(running, j)
+			}
 		}
+		jobs = running
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
@@ -357,9 +366,13 @@ func startJob(cmd *exec.Cmd, line string) error {
 		number = jobs[len(jobs)-1].number + 1
 	}
 	command := strings.TrimSpace(line[:strings.LastIndex(line, "&")])
-	jobs = append(jobs, job{number, command})
+	j := job{number, command, make(chan struct{})}
+	jobs = append(jobs, j)
 	_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", number, cmd.Process.Pid)
-	go cmd.Wait() // reaps it once it exits
+	go func() {
+		_ = cmd.Wait() // reaps it once it exits
+		close(j.done)
+	}()
 	return nil
 }
 
