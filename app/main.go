@@ -90,7 +90,7 @@ func (c *tabCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	if len(before) == 0 {
 		partial, names = word, commandNames(word)
 	} else if script, ok := completers[before[0]]; ok {
-		partial, names = word, completerNames(script, before, word)
+		partial, names = word, completerNames(script, before, word, string(line), len(typed))
 	} else {
 		dir := word[:strings.LastIndex(word, "/")+1] // "" when word has no "/"
 		partial = word[len(dir):]
@@ -157,21 +157,24 @@ func commandNames(prefix string) []string {
 }
 
 // completerNames runs script, a completer registered with complete -C, for
-// completing word after the words before it, and returns the lines it prints
-// that start with word, sorted and without duplicates. The script gets three
-// arguments: the command name, word, and the argument before word ("" when
-// word is the first).
-func completerNames(script string, before []string, word string) []string {
+// completing word after the words before it in commandLine, with the cursor at
+// byte offset point, and returns the lines it prints that start with word,
+// sorted and without duplicates. The script gets three arguments: the command
+// name, word, and the argument before word ("" when word is the first); and,
+// as in bash, commandLine and point in COMP_LINE and COMP_POINT.
+func completerNames(script string, before []string, word, commandLine string, point int) []string {
 	previous := ""
 	if len(before) > 1 {
 		previous = before[len(before)-1]
 	}
-	out, _ := exec.Command(script, before[0], word, previous).Output() // a failed script prints nothing useful
+	cmd := exec.Command(script, before[0], word, previous)
+	cmd.Env = append(os.Environ(), "COMP_LINE="+commandLine, fmt.Sprintf("COMP_POINT=%d", point))
+	out, _ := cmd.Output() // a failed script prints nothing useful
 	var names []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line != "" && strings.HasPrefix(line, word) {
-			names = append(names, line)
+	for _, name := range strings.Split(string(out), "\n") {
+		name = strings.TrimRight(name, "\r")
+		if name != "" && strings.HasPrefix(name, word) {
+			names = append(names, name)
 		}
 	}
 	slices.Sort(names)
