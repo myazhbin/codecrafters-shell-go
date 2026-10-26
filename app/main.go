@@ -28,6 +28,10 @@ var builtInCommands = map[string]bool{
 // suggest completions for that command, until complete -r removes it.
 var completers = map[string]string{}
 
+// lastJob is the number of the job last started in the background with &; jobs
+// are numbered from 1 in the order they start.
+var lastJob int
+
 func main() {
 	// Input from a file or pipe is read as plain lines, since readline would
 	// treat a Tab in it as a request to complete.
@@ -223,8 +227,10 @@ func terminalWidth() int {
 }
 
 // runCommand runs one command line and reports whether the shell should exit.
+// Only a program runs in the background; a builtin ending in & runs in the shell
+// as usual.
 func runCommand(line string) (exit bool) {
-	args, stdoutFile, stderrFile := parseCommand(line)
+	args, stdoutFile, stderrFile, background := parseCommand(line)
 	if len(args) == 0 {
 		return false
 	}
@@ -304,16 +310,27 @@ func runCommand(line string) (exit bool) {
 			}
 		}
 	case "jobs":
-		// Nothing runs in the background yet, so there are no jobs to list.
+		// Background jobs aren't listed yet.
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
 		} else {
 			cmd := exec.Command(args[0], args[1:]...)
-			cmd.Stdin = os.Stdin
 			cmd.Stdout = stdout
 			cmd.Stderr = stderr
-			_ = cmd.Run()
+			if !background {
+				cmd.Stdin = os.Stdin
+				_ = cmd.Run()
+			} else if err := cmd.Start(); err != nil {
+				_, _ = fmt.Fprintln(stderr, err)
+			} else {
+				// It reads from /dev/null (Stdin is nil), as in bash without job
+				// control, so it can't take what's typed from the shell. Like bash,
+				// the shell reports the job on its own standard error.
+				lastJob++
+				_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", lastJob, cmd.Process.Pid)
+				go cmd.Wait() // reaps it once it exits
+			}
 		}
 	}
 	return false
@@ -337,11 +354,11 @@ func (r redirection) open() (*os.File, error) {
 
 // parseCommand splits line into arguments at unquoted spaces and tabs, and
 // picks out where standard output (> or 1>) and standard error (2>) go; a
-// doubled >> appends to the file instead. Quoted text is taken literally,
-// except that inside double quotes a backslash escapes ", \, $ and `. Outside
-// quotes, a backslash makes the next character literal. Adjacent pieces join
-// into one argument.
-func parseCommand(line string) (args []string, stdoutFile, stderrFile redirection) {
+// doubled >> appends to the file instead. An unquoted & ending the line sets
+// background. Quoted text is taken literally, except that inside double
+// quotes a backslash escapes ", \, $ and `. Outside quotes, a backslash makes
+// the next character literal. Adjacent pieces join into one argument.
+func parseCommand(line string) (args []string, stdoutFile, stderrFile redirection, background bool) {
 	var arg strings.Builder
 	inArg := false          // true once an argument has started, even an empty one like ''
 	plain := true           // the argument so far has no quotes or backslashes
@@ -361,7 +378,7 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 		arg.Reset()
 		inArg, plain = false, true
 	}
-	for _, r := range line {
+	for i, r := range line {
 		doubled := afterGreater && r == '>'
 		afterGreater = false
 		switch {
@@ -393,6 +410,9 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 			endArg()
 			*next = redirection{} // replaces any earlier redirection of the same output
 			target, afterGreater = next, true
+		case r == '&' && strings.TrimSpace(line[i+1:]) == "":
+			endArg()
+			background = true
 		case r == ' ' || r == '\t':
 			endArg()
 		default:
@@ -401,5 +421,5 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 		}
 	}
 	endArg()
-	return args, stdoutFile, stderrFile
+	return args, stdoutFile, stderrFile, background
 }
