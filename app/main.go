@@ -250,6 +250,12 @@ func runCommand(line string) (exit bool) {
 		} else if err != nil {
 			_, _ = fmt.Fprintln(stderr, "cd:", err)
 		}
+	case "complete":
+		if len(args) > 1 && args[1] == "-p" {
+			for _, name := range args[2:] {
+				_, _ = fmt.Fprintln(stderr, "complete: "+name+": no completion specification")
+			}
+		}
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
