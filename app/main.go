@@ -64,8 +64,9 @@ func main() {
 
 // commandCompleter completes the command name at the start of the line to a
 // builtin or a program in PATH, followed by a space. Like bash, it rings the
-// bell when nothing matches; when several names match, the first Tab rings the
-// bell and a second Tab in a row lists them.
+// bell when nothing matches. When several names match, it adds what they all
+// start with; if that's nothing more, the first Tab rings the bell and a second
+// Tab in a row lists them.
 type commandCompleter struct {
 	rl        *readline.Instance
 	ambiguous bool // the last key was a Tab that found several matches
@@ -77,9 +78,15 @@ func (c *commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	if !strings.Contains(word, " ") { // only the command name is completed
 		names = commandNames(word)
 	}
+	prefix := word
+	if len(names) > 1 {
+		prefix = commonPrefix(names)
+	}
 	switch {
 	case len(names) == 1:
 		return [][]rune{[]rune(names[0][len(word):] + " ")}, len([]rune(word))
+	case len(prefix) > len(word): // the matches all go on past what was typed
+		return [][]rune{[]rune(prefix[len(word):])}, len([]rune(word))
 	case len(names) > 1 && c.ambiguous:
 		fmt.Print("\n" + strings.Join(names, "  ") + "\n")
 		c.rl.Refresh() // show the prompt and the line again below the list
@@ -125,6 +132,17 @@ func commandNames(prefix string) []string {
 		}
 	}
 	return slices.Sorted(maps.Keys(names))
+}
+
+// commonPrefix returns the longest prefix shared by sorted names, which is the
+// one shared by the first and the last.
+func commonPrefix(sorted []string) string {
+	first, last := []rune(sorted[0]), []rune(sorted[len(sorted)-1])
+	n := 0
+	for n < len(first) && n < len(last) && first[n] == last[n] {
+		n++
+	}
+	return string(first[:n])
 }
 
 // terminalWidth returns the terminal's width in columns, or 80 when it reports
