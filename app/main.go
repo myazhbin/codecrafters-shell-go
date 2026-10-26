@@ -23,6 +23,10 @@ var builtInCommands = map[string]bool{
 	"complete": true,
 }
 
+// completers maps a command name to the program registered with complete -C to
+// suggest completions for that command.
+var completers = map[string]string{}
+
 func main() {
 	// Input from a file or pipe is read as plain lines, since readline would
 	// treat a Tab in it as a request to complete.
@@ -251,9 +255,18 @@ func runCommand(line string) (exit bool) {
 			_, _ = fmt.Fprintln(stderr, "cd:", err)
 		}
 	case "complete":
-		if len(args) > 1 && args[1] == "-p" {
+		switch {
+		case len(args) > 1 && args[1] == "-p":
 			for _, name := range args[2:] {
-				_, _ = fmt.Fprintln(stderr, "complete: "+name+": no completion specification")
+				if script, ok := completers[name]; ok {
+					_, _ = fmt.Fprintf(stdout, "complete -C '%s' %s\n", script, name)
+				} else {
+					_, _ = fmt.Fprintln(stderr, "complete: "+name+": no completion specification")
+				}
+			}
+		case len(args) > 2 && args[1] == "-C":
+			for _, name := range args[3:] {
+				completers[name] = args[2]
 			}
 		}
 	default:
