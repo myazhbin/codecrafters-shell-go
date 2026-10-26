@@ -68,9 +68,10 @@ func main() {
 }
 
 // tabCompleter completes the word before the cursor: the command name to a
-// builtin or a program in PATH, and any other word to a file name, in the
-// directory the word names up to its last "/" or else the current directory.
-// A completed name gets a space after it, or a "/" for a directory.
+// builtin or a program in PATH, and any other word to a line printed by the
+// command's completer (see complete -C) or, without one, to a file name, in
+// the directory the word names up to its last "/" or else the current
+// directory. A completed name gets a space after it, or a "/" for a directory.
 // Like bash, it rings the bell when nothing matches. When several names match,
 // it adds what they all start with; if that's nothing more, the first Tab rings
 // the bell and a second Tab in a row lists them.
@@ -86,6 +87,8 @@ func (c *tabCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	var names []string
 	if strings.TrimLeft(typed, " ") == word {
 		partial, names = word, commandNames(word)
+	} else if script, ok := completers[strings.Fields(typed)[0]]; ok {
+		partial, names = word, completerNames(script, word)
 	} else {
 		dir := word[:strings.LastIndex(word, "/")+1] // "" when word has no "/"
 		partial = word[len(dir):]
@@ -149,6 +152,22 @@ func commandNames(prefix string) []string {
 		}
 	}
 	return slices.Sorted(maps.Keys(names))
+}
+
+// completerNames runs script, a completer registered with complete -C, and
+// returns the lines it prints that start with prefix, sorted and without
+// duplicates.
+func completerNames(script, prefix string) []string {
+	out, _ := exec.Command(script).Output() // a script that fails prints nothing useful
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line != "" && strings.HasPrefix(line, prefix) {
+			names = append(names, line)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 // fileNames returns the names in dir (the current directory when dir is "") that
