@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
+
+	"github.com/chzyer/readline"
 )
 
 var builtInCommands = map[string]bool{
@@ -18,18 +22,66 @@ var builtInCommands = map[string]bool{
 }
 
 func main() {
+	// Input from a file or pipe is read as plain lines, since readline would
+	// treat a Tab in it as a request to complete.
 	reader := bufio.NewReader(os.Stdin)
-	for {
+	readLine := func() (string, error) {
 		fmt.Print("$ ")
-		command, err := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), err
+	}
+	if readline.DefaultIsTerminal() {
+		rl, err := readline.NewEx(&readline.Config{
+			Prompt:       "$ ",
+			AutoComplete: builtinCompleter{},
+			FuncGetWidth: terminalWidth,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "Error setting up input:", err)
+			os.Exit(1)
+		}
+		defer rl.Close()
+		readLine = rl.Readline
+	}
+	for {
+		command, err := readLine()
+		if errors.Is(err, readline.ErrInterrupt) {
+			continue // Ctrl-C drops the line being typed
+		}
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Error reading input:", err)
 			os.Exit(1)
 		}
-		if runCommand(strings.TrimRight(command, "\r\n")) {
+		if runCommand(command) {
 			return
 		}
 	}
+}
+
+// builtinCompleter completes the command name at the start of the line to a
+// builtin, followed by a space.
+type builtinCompleter struct{}
+
+func (builtinCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+	word := strings.TrimLeft(string(line[:pos]), " ")
+	if strings.Contains(word, " ") {
+		return nil, 0 // the cursor is past the command name
+	}
+	for _, name := range slices.Sorted(maps.Keys(builtInCommands)) {
+		if strings.HasPrefix(name, word) {
+			newLine = append(newLine, []rune(name[len(word):]+" "))
+		}
+	}
+	return newLine, len(word)
+}
+
+// terminalWidth returns the terminal's width in columns, or 80 when it reports
+// none, since readline turns Tab completion off for a width of 0.
+func terminalWidth() int {
+	if width := readline.GetScreenWidth(); width > 0 {
+		return width
+	}
+	return 80
 }
 
 // runCommand runs one command line and reports whether the shell should exit.
