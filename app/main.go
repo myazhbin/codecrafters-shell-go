@@ -59,18 +59,20 @@ func main() {
 }
 
 // builtinCompleter completes the command name at the start of the line to a
-// builtin, followed by a space.
+// builtin, followed by a space, and rings the bell when nothing matches.
 type builtinCompleter struct{}
 
 func (builtinCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	word := strings.TrimLeft(string(line[:pos]), " ")
-	if strings.Contains(word, " ") {
-		return nil, 0 // the cursor is past the command name
-	}
-	for _, name := range slices.Sorted(maps.Keys(builtInCommands)) {
-		if strings.HasPrefix(name, word) {
-			newLine = append(newLine, []rune(name[len(word):]+" "))
+	if !strings.Contains(word, " ") { // only the command name is completed
+		for _, name := range slices.Sorted(maps.Keys(builtInCommands)) {
+			if strings.HasPrefix(name, word) {
+				newLine = append(newLine, []rune(name[len(word):]+" "))
+			}
 		}
+	}
+	if len(newLine) == 0 {
+		fmt.Print("\a")
 	}
 	return newLine, len(word)
 }
