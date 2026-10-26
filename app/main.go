@@ -28,9 +28,14 @@ var builtInCommands = map[string]bool{
 // suggest completions for that command, until complete -r removes it.
 var completers = map[string]string{}
 
-// lastJob is the number of the job last started in the background with &; jobs
-// are numbered from 1 in the order they start.
-var lastJob int
+// job is a program started in the background with &.
+type job struct {
+	number  int
+	command string // the command line that started it, without the &
+}
+
+// jobs are the background jobs, oldest first.
+var jobs []job
 
 func main() {
 	// Input from a file or pipe is read as plain lines, since readline would
@@ -310,30 +315,52 @@ func runCommand(line string) (exit bool) {
 			}
 		}
 	case "jobs":
-		// Background jobs aren't listed yet.
+		// Every job shows as running, since the shell doesn't notice yet when
+		// one ends. As in bash, + marks the newest job and - the one before it.
+		for i, j := range jobs {
+			marker := " "
+			if i == len(jobs)-1 {
+				marker = "+"
+			} else if i == len(jobs)-2 {
+				marker = "-"
+			}
+			_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s &\n", j.number, marker, "Running", j.command)
+		}
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
 		} else {
 			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Stdin = os.Stdin
 			cmd.Stdout = stdout
 			cmd.Stderr = stderr
 			if !background {
-				cmd.Stdin = os.Stdin
 				_ = cmd.Run()
-			} else if err := cmd.Start(); err != nil {
+			} else if err := startJob(cmd, line); err != nil {
 				_, _ = fmt.Fprintln(stderr, err)
-			} else {
-				// It reads from /dev/null (Stdin is nil), as in bash without job
-				// control, so it can't take what's typed from the shell. Like bash,
-				// the shell reports the job on its own standard error.
-				lastJob++
-				_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", lastJob, cmd.Process.Pid)
-				go cmd.Wait() // reaps it once it exits
 			}
 		}
 	}
 	return false
+}
+
+// startJob starts cmd in the background for line, a command line ending in &,
+// and adds it to jobs. Like bash, it numbers the job one more than the newest
+// one, or 1 if there are none, and reports the number and process ID on the
+// shell's standard error.
+func startJob(cmd *exec.Cmd, line string) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	number := 1
+	if len(jobs) > 0 {
+		number = jobs[len(jobs)-1].number + 1
+	}
+	command := strings.TrimSpace(line[:strings.LastIndex(line, "&")])
+	jobs = append(jobs, job{number, command})
+	_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", number, cmd.Process.Pid)
+	go cmd.Wait() // reaps it once it exits
+	return nil
 }
 
 // redirection says where standard output or standard error goes: the file at
