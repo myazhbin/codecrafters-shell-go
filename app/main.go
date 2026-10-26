@@ -32,9 +32,11 @@ func main() {
 		return strings.TrimRight(line, "\r\n"), err
 	}
 	if readline.DefaultIsTerminal() {
+		completer := &commandCompleter{}
 		rl, err := readline.NewEx(&readline.Config{
 			Prompt:       "$ ",
-			AutoComplete: commandCompleter{},
+			AutoComplete: completer,
+			Listener:     completer,
 			FuncGetWidth: terminalWidth,
 		})
 		if err != nil {
@@ -42,6 +44,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer rl.Close()
+		completer.rl = rl
 		readLine = rl.Readline
 	}
 	for {
@@ -60,21 +63,40 @@ func main() {
 }
 
 // commandCompleter completes the command name at the start of the line to a
-// builtin or a program in PATH, followed by a space, and rings the bell when
-// nothing matches.
-type commandCompleter struct{}
+// builtin or a program in PATH, followed by a space. Like bash, it rings the
+// bell when nothing matches; when several names match, the first Tab rings the
+// bell and a second Tab in a row lists them.
+type commandCompleter struct {
+	rl        *readline.Instance
+	ambiguous bool // the last key was a Tab that found several matches
+}
 
-func (commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+func (c *commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	word := strings.TrimLeft(string(line[:pos]), " ")
+	var names []string
 	if !strings.Contains(word, " ") { // only the command name is completed
-		for _, name := range commandNames(word) {
-			newLine = append(newLine, []rune(name[len(word):]+" "))
-		}
+		names = commandNames(word)
 	}
-	if len(newLine) == 0 {
+	switch {
+	case len(names) == 1:
+		return [][]rune{[]rune(names[0][len(word):] + " ")}, len([]rune(word))
+	case len(names) > 1 && c.ambiguous:
+		fmt.Print("\n" + strings.Join(names, "  ") + "\n")
+		c.rl.Refresh() // show the prompt and the line again below the list
+	default:
 		fmt.Print("\a")
+		c.ambiguous = len(names) > 1
 	}
-	return newLine, len([]rune(word))
+	return nil, 0
+}
+
+// OnChange is called by readline after every key, and with key 0 when it starts
+// reading a line. Any key but Tab ends a run of Tabs.
+func (c *commandCompleter) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
+	if key != '\t' {
+		c.ambiguous = false
+	}
+	return nil, 0, false
 }
 
 // commandNames returns the builtins and the programs in PATH whose names start
