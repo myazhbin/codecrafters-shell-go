@@ -32,7 +32,7 @@ func main() {
 		return strings.TrimRight(line, "\r\n"), err
 	}
 	if readline.DefaultIsTerminal() {
-		completer := &commandCompleter{}
+		completer := &tabCompleter{}
 		rl, err := readline.NewEx(&readline.Config{
 			Prompt:       "$ ",
 			AutoComplete: completer,
@@ -62,21 +62,25 @@ func main() {
 	}
 }
 
-// commandCompleter completes the command name at the start of the line to a
-// builtin or a program in PATH, followed by a space. Like bash, it rings the
-// bell when nothing matches. When several names match, it adds what they all
-// start with; if that's nothing more, the first Tab rings the bell and a second
-// Tab in a row lists them.
-type commandCompleter struct {
+// tabCompleter completes the word before the cursor: the command name to a
+// builtin or a program in PATH, and any other word to a name in the current
+// directory. A completed name gets a space after it, or a "/" for a directory.
+// Like bash, it rings the bell when nothing matches. When several names match,
+// it adds what they all start with; if that's nothing more, the first Tab rings
+// the bell and a second Tab in a row lists them.
+type tabCompleter struct {
 	rl        *readline.Instance
 	ambiguous bool // the last key was a Tab that found several matches
 }
 
-func (c *commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
-	word := strings.TrimLeft(string(line[:pos]), " ")
+func (c *tabCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+	typed := string(line[:pos])
+	word := typed[strings.LastIndex(typed, " ")+1:]
 	var names []string
-	if !strings.Contains(word, " ") { // only the command name is completed
+	if strings.TrimLeft(typed, " ") == word {
 		names = commandNames(word)
+	} else {
+		names = fileNames(word)
 	}
 	prefix := word
 	if len(names) > 1 {
@@ -84,7 +88,11 @@ func (c *commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 	}
 	switch {
 	case len(names) == 1:
-		return [][]rune{[]rune(names[0][len(word):] + " ")}, len([]rune(word))
+		completion := names[0][len(word):]
+		if !strings.HasSuffix(completion, "/") {
+			completion += " "
+		}
+		return [][]rune{[]rune(completion)}, len([]rune(word))
 	case len(prefix) > len(word): // the matches all go on past what was typed
 		return [][]rune{[]rune(prefix[len(word):])}, len([]rune(word))
 	case len(names) > 1 && c.ambiguous:
@@ -99,7 +107,7 @@ func (c *commandCompleter) Do(line []rune, pos int) (newLine [][]rune, length in
 
 // OnChange is called by readline after every key, and with key 0 when it starts
 // reading a line. Any key but Tab ends a run of Tabs.
-func (c *commandCompleter) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
+func (c *tabCompleter) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
 	if key != '\t' {
 		c.ambiguous = false
 	}
@@ -132,6 +140,27 @@ func commandNames(prefix string) []string {
 		}
 	}
 	return slices.Sorted(maps.Keys(names))
+}
+
+// fileNames returns the names in the current directory that start with prefix,
+// sorted, with a "/" after each directory.
+func fileNames(prefix string) []string {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if entry.IsDir() {
+			name += "/"
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // commonPrefix returns the longest prefix shared by sorted names, which is the
