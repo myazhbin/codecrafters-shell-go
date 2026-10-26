@@ -15,11 +15,12 @@ import (
 )
 
 var builtInCommands = map[string]bool{
-	"exit": true,
-	"echo": true,
-	"type": true,
-	"pwd":  true,
-	"cd":   true,
+	"exit":     true,
+	"echo":     true,
+	"type":     true,
+	"pwd":      true,
+	"cd":       true,
+	"complete": true,
 }
 
 func main() {
