@@ -39,8 +39,8 @@ func runCommand(line string) (exit bool) {
 		return false
 	}
 	stdout, stderr := os.Stdout, os.Stderr
-	if stdoutFile != "" {
-		file, err := os.Create(stdoutFile)
+	if stdoutFile.path != "" {
+		file, err := stdoutFile.open()
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return false
@@ -48,8 +48,8 @@ func runCommand(line string) (exit bool) {
 		defer file.Close()
 		stdout = file
 	}
-	if stderrFile != "" {
-		file, err := os.Create(stderrFile)
+	if stderrFile.path != "" {
+		file, err := stderrFile.open()
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return false
@@ -105,34 +105,51 @@ func runCommand(line string) (exit bool) {
 	return false
 }
 
+// redirection says where standard output or standard error goes: the file at
+// path, emptied first unless append is set, or the terminal when path is "".
+type redirection struct {
+	path   string
+	append bool
+}
+
+// open opens the redirection's file for writing, creating it if needed.
+func (r redirection) open() (*os.File, error) {
+	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if r.append {
+		flag = os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	}
+	return os.OpenFile(r.path, flag, 0o666)
+}
+
 // parseCommand splits line into arguments at unquoted spaces and tabs, and
-// returns the files named after an unquoted > or 1> (for standard output) and
-// 2> (for standard error). Quoted text is taken literally, except that inside
-// double quotes a backslash escapes ", \, $ and `. Outside quotes, a backslash
-// makes the next character literal. Adjacent pieces join into one argument.
-func parseCommand(line string) (args []string, stdoutFile, stderrFile string) {
+// picks out where standard output (> or 1>) and standard error (2>) go; a
+// doubled >> appends to the file instead. Quoted text is taken literally,
+// except that inside double quotes a backslash escapes ", \, $ and `. Outside
+// quotes, a backslash makes the next character literal. Adjacent pieces join
+// into one argument.
+func parseCommand(line string) (args []string, stdoutFile, stderrFile redirection) {
 	var arg strings.Builder
-	inArg := false   // true once an argument has started, even an empty one like ''
-	plain := true    // the argument so far has no quotes or backslashes
-	var quote rune   // the quote character we're inside, or 0 when outside quotes
-	escaped := false // the previous character was a backslash outside single quotes
-	redirect := 0    // 1 or 2 when the next argument names the file for that output
+	inArg := false          // true once an argument has started, even an empty one like ''
+	plain := true           // the argument so far has no quotes or backslashes
+	var quote rune          // the quote character we're inside, or 0 when outside quotes
+	escaped := false        // the previous character was a backslash outside single quotes
+	var target *redirection // the redirection whose file the next argument names
+	afterGreater := false   // the previous character was a > that started a redirection
 	endArg := func() {
 		if !inArg {
 			return
 		}
-		switch redirect {
-		case 1:
-			stdoutFile = arg.String()
-		case 2:
-			stderrFile = arg.String()
-		default:
+		if target != nil {
+			target.path, target = arg.String(), nil
+		} else {
 			args = append(args, arg.String())
 		}
 		arg.Reset()
-		inArg, plain, redirect = false, true, 0
+		inArg, plain = false, true
 	}
 	for _, r := range line {
+		doubled := afterGreater && r == '>'
+		afterGreater = false
 		switch {
 		case escaped:
 			if quote == '"' && !strings.ContainsRune("\"\\$`", r) {
@@ -148,15 +165,20 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile string) {
 			arg.WriteRune(r)
 		case r == '\'' || r == '"':
 			quote, inArg, plain = r, true, false
+		case doubled:
+			target.append = true
 		case r == '>':
-			fd := 1
+			next := &stdoutFile
 			if n := arg.String(); plain && (n == "1" || n == "2") {
-				fd = int(n[0] - '0') // an unquoted 1 or 2 right before > picks the output
-				arg.Reset()
+				if n == "2" {
+					next = &stderrFile
+				}
+				arg.Reset() // an unquoted 1 or 2 right before > picks the output
 				inArg = false
 			}
 			endArg()
-			redirect = fd
+			*next = redirection{} // replaces any earlier redirection of the same output
+			target, afterGreater = next, true
 		case r == ' ' || r == '\t':
 			endArg()
 		default:
