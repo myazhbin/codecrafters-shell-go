@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -64,6 +65,7 @@ func main() {
 		readLine = rl.Readline
 	}
 	for {
+		reapJobs(os.Stderr, false) // as in bash, jobs that have ended are reported before each prompt
 		command, err := readLine()
 		if errors.Is(err, readline.ErrInterrupt) {
 			continue // Ctrl-C drops the line being typed
@@ -316,25 +318,7 @@ func runCommand(line string) (exit bool) {
 			}
 		}
 	case "jobs":
-		// As in bash, + marks the newest job and - the one before it, and a job
-		// that has ended is listed as Done this once, then dropped.
-		var running []job
-		for i, j := range jobs {
-			marker := " "
-			if i == len(jobs)-1 {
-				marker = "+"
-			} else if i == len(jobs)-2 {
-				marker = "-"
-			}
-			select {
-			case <-j.done:
-				_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s\n", j.number, marker, "Done", j.command)
-			default:
-				_, _ = fmt.Fprintf(stdout, "[%d]%s  %-24s%s &\n", j.number, marker, "Running", j.command)
-				running = append(running, j)
-			}
-		}
-		jobs = running
+		reapJobs(stdout, true)
 	default:
 		if _, err := exec.LookPath(args[0]); err != nil {
 			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
@@ -374,6 +358,31 @@ func startJob(cmd *exec.Cmd, line string) error {
 		close(j.done)
 	}()
 	return nil
+}
+
+// reapJobs lists to w, the way bash's jobs does, each job that has ended, as
+// Done, and drops it; with listRunning, it lists the running jobs too. The
+// newest job is marked + and the one before it -.
+func reapJobs(w io.Writer, listRunning bool) {
+	var left []job
+	for i, j := range jobs {
+		marker := " "
+		if i == len(jobs)-1 {
+			marker = "+"
+		} else if i == len(jobs)-2 {
+			marker = "-"
+		}
+		select {
+		case <-j.done:
+			_, _ = fmt.Fprintf(w, "[%d]%s  %-24s%s\n", j.number, marker, "Done", j.command)
+		default:
+			if listRunning {
+				_, _ = fmt.Fprintf(w, "[%d]%s  %-24s%s &\n", j.number, marker, "Running", j.command)
+			}
+			left = append(left, j)
+		}
+	}
+	jobs = left
 }
 
 // redirection says where standard output or standard error goes: the file at
