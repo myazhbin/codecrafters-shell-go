@@ -26,7 +26,7 @@ func main() {
 			_, _ = fmt.Fprintln(os.Stderr, "Error reading input:", err)
 			os.Exit(1)
 		}
-		args := parseArgs(strings.TrimSpace(command))
+		args := parseArgs(strings.TrimRight(command, "\r\n"))
 		if len(args) == 0 {
 			continue
 		}
@@ -79,19 +79,25 @@ func main() {
 }
 
 // parseArgs splits line into arguments at unquoted spaces and tabs. Text inside
-// single or double quotes is taken literally, and adjacent pieces join into one
-// argument.
+// single or double quotes is taken literally, a backslash outside quotes makes
+// the next character literal, and adjacent pieces join into one argument.
 func parseArgs(line string) []string {
 	var args []string
 	var arg strings.Builder
-	inArg := false // true once an argument has started, even an empty one like ''
-	var quote rune // the quote character we're inside, or 0 when outside quotes
+	inArg := false   // true once an argument has started, even an empty one like ''
+	var quote rune   // the quote character we're inside, or 0 when outside quotes
+	escaped := false // the previous character was a backslash outside quotes
 	for _, r := range line {
 		switch {
+		case escaped:
+			arg.WriteRune(r)
+			escaped, inArg = false, true
 		case quote != 0 && r == quote:
 			quote = 0
 		case quote != 0:
 			arg.WriteRune(r)
+		case r == '\\':
+			escaped = true
 		case r == '\'' || r == '"':
 			quote, inArg = r, true
 		case r == ' ' || r == '\t':
