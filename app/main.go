@@ -79,20 +79,21 @@ func main() {
 }
 
 // parseArgs splits line into arguments at unquoted spaces and tabs. Text inside
-// single quotes is taken literally, and adjacent pieces join into one argument.
+// single or double quotes is taken literally, and adjacent pieces join into one
+// argument.
 func parseArgs(line string) []string {
 	var args []string
 	var arg strings.Builder
 	inArg := false // true once an argument has started, even an empty one like ''
-	inQuotes := false
+	var quote rune // the quote character we're inside, or 0 when outside quotes
 	for _, r := range line {
 		switch {
-		case inQuotes && r == '\'':
-			inQuotes = false
-		case inQuotes:
+		case quote != 0 && r == quote:
+			quote = 0
+		case quote != 0:
 			arg.WriteRune(r)
-		case r == '\'':
-			inQuotes, inArg = true, true
+		case r == '\'' || r == '"':
+			quote, inArg = r, true
 		case r == ' ' || r == '\t':
 			if inArg {
 				args = append(args, arg.String())
