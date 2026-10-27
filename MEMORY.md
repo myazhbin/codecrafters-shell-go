@@ -1,0 +1,3 @@
+- [CodeCrafters stage workflow](memory/codecrafters-stage-workflow.md) — how stages are done and checked; where the stages' spec and bash differ
+- [Shell testing pitfalls](memory/macos-shell-testing-pitfalls.md) — macOS and test-harness quirks that look like shell bugs but aren't
+- [Sound hooks location](memory/sound-hooks-location.md) — user-level Stop/PermissionRequest hooks play sounds from this repo's .claude/sounds

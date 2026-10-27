@@ -235,10 +235,9 @@ func terminalWidth() int {
 	return 80
 }
 
-// runCommand runs one command line, a builtin or a pipeline of programs, and
-// reports whether the shell should exit. Only programs run in the background; a
-// builtin ending in & runs in the shell as usual. In a pipeline, every command
-// runs as a program, even one named like a builtin.
+// runCommand runs one command line, a builtin or a pipeline, and reports
+// whether the shell should exit. Only programs run in the background; a builtin
+// ending in & runs in the shell as usual.
 func runCommand(line string) (exit bool) {
 	commands, background := parseCommand(line)
 	for _, c := range commands {
@@ -250,21 +249,18 @@ func runCommand(line string) (exit bool) {
 		}
 	}
 	if len(commands) == 1 && builtInCommands[commands[0].args[0]] {
-		return runBuiltin(commands[0])
+		return runBuiltin(commands[0], os.Stdout)
 	}
-	runPrograms(commands, background, line)
+	runPipeline(commands, background, line)
 	return false
 }
 
-// runBuiltin runs c, a builtin, and reports whether the shell should exit.
-func runBuiltin(c command) (exit bool) {
+// runBuiltin runs c, a builtin, writing to stdout unless c redirects its
+// output, and reports whether the shell should exit.
+func runBuiltin(c command, stdout *os.File) (exit bool) {
 	var files []*os.File
-	defer func() {
-		for _, file := range files {
-			_ = file.Close()
-		}
-	}()
-	stdout, stderr, err := c.openOutputs(os.Stdout, os.Stderr, &files)
+	defer func() { closeAll(files) }()
+	stdout, stderr, err := c.openOutputs(stdout, os.Stderr, &files)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		return false
@@ -332,37 +328,59 @@ func runBuiltin(c command) (exit bool) {
 	return false
 }
 
-// runPrograms runs commands, which name programs, as a pipeline: each one's
-// standard output goes through a pipe to the next one's standard input, unless
-// it's redirected. It waits for them all to finish or, with background, makes
+// runPipeline runs commands as a pipeline: each one's standard output goes
+// through a pipe to the next one's standard input, unless it's redirected.
+// Programs run side by side, and then builtins run in the shell itself, one at
+// a time. No builtin reads its input, so a program writing to one gets SIGPIPE,
+// as with any program that doesn't read. Bash runs a pipeline's builtins in
+// subshells, so here too exit doesn't end the shell, though cd does change its
+// directory. It waits for the programs to finish or, with background, makes
 // them a job for line. As in bash, a program that can't be run is reported and
 // the rest of the pipeline runs without it.
-func runPrograms(commands []command, background bool, line string) {
-	var files []*os.File // the shell's copies of pipe ends and redirected files
-	var cmds []*exec.Cmd
-	stdin := os.Stdin
-	for i, c := range commands {
-		stdout := os.Stdout
-		var next *os.File // the read end of the pipe to the next program
-		if i < len(commands)-1 {
-			r, w, err := os.Pipe()
-			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, err)
-				break
-			}
-			files = append(files, r, w)
-			stdout, next = w, r
+func runPipeline(commands []command, background bool, line string) {
+	// Command i reads from in[i] and writes to out[i], unless it redirects them.
+	in, out := make([]*os.File, len(commands)), make([]*os.File, len(commands))
+	in[0], out[len(commands)-1] = os.Stdin, os.Stdout
+	var pipes []*os.File
+	for i := range len(commands) - 1 {
+		r, w, err := os.Pipe()
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			closeAll(pipes)
+			return
 		}
-		if cmd := startProgram(c, stdin, stdout, &files); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-		stdin = next
+		pipes = append(pipes, r, w)
+		out[i], in[i+1] = w, r
 	}
-	// Once the shell lets go of the pipes, a program reads the end of its input
-	// when the one before it exits, and one writing to a program that has exited
-	// gets SIGPIPE, as in tail -f | head.
-	for _, file := range files {
-		_ = file.Close()
+	var files []*os.File // the files programs' output is redirected to
+	var cmds []*exec.Cmd
+	for i, c := range commands {
+		if !builtInCommands[c.args[0]] {
+			if cmd := startProgram(c, in[i], out[i], &files); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+	// The programs have their own copies of these now. Once the shell lets go
+	// of a pipe, its reader sees the end of its input when the writer exits, and
+	// the writer gets SIGPIPE once the reader has exited, as in tail -f | head.
+	// The shell keeps only the pipes builtins write to, until they're done.
+	closeAll(files)
+	for i, c := range commands {
+		if i > 0 {
+			_ = in[i].Close()
+		}
+		if i < len(commands)-1 && !builtInCommands[c.args[0]] {
+			_ = out[i].Close()
+		}
+	}
+	for i, c := range commands {
+		if builtInCommands[c.args[0]] {
+			runBuiltin(c, out[i])
+			if i < len(commands)-1 {
+				_ = out[i].Close()
+			}
+		}
 	}
 	if background && len(cmds) > 0 {
 		addJob(cmds, line)
@@ -486,6 +504,13 @@ func (c command) openOutputs(stdout, stderr *os.File, files *[]*os.File) (*os.Fi
 		stderr = file
 	}
 	return stdout, stderr, nil
+}
+
+// closeAll closes files.
+func closeAll(files []*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 // parseCommand splits line at unquoted |s into the commands of a pipeline, and
