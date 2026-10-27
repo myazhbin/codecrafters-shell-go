@@ -713,9 +713,23 @@ func TestHistory(t *testing.T) {
 		s.expect("echo hello", "hello")
 		s.expect("echo world", "world")
 		s.exit("exit\r")
-		want := "echo hello\necho world\nexit\n"
-		fileHolds(t, file, want)
+		fileHolds(t, file, "echo hello\necho world\nexit\n")
 		ownerOnly(t, file)
+		// When it can't write the file, it exits all the same, as bash does.
+		lost := startShell(t, dir, "HISTFILE="+filepath.Join(dir, "no", "such", "file"))
+		lost.expect("echo lost", "lost")
+		lost.exit("exit\r")
+	})
+	t.Run("append on exit", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history")
+		appendFile(t, file, "echo initial_command_1\necho initial_command_2\n") // as the tester writes it
+		s := startShell(t, dir, "HISTFILE="+file)
+		s.expect("echo new_command", "new_command")
+		s.exit("exit\r")
+		want := "echo initial_command_1\necho initial_command_2\necho new_command\nexit\n"
+		fileHolds(t, file, want)
 		// As in bash, it appends the lines entered since history -a last ran,
 		// rather than writing the file anew: the next shell reads the lines in
 		// but adds just its own, and lines added to the file meanwhile stay.
@@ -729,10 +743,6 @@ func TestHistory(t *testing.T) {
 		next.exit("\x04")
 		want += "echo saved\nhistory -a\necho from elsewhere\necho new\n"
 		fileHolds(t, file, want)
-		// When it can't write the file, it exits all the same, as bash does.
-		lost := startShell(t, dir, "HISTFILE="+filepath.Join(dir, "no", "such", "file"))
-		lost.expect("echo lost", "lost")
-		lost.exit("exit\r")
 	})
 }
 
