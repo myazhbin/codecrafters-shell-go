@@ -48,6 +48,9 @@ var variables = map[string]variable{}
 // underscore, then letters, digits and underscores.
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// leadingName matches the longest variable name a string starts with.
+var leadingName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
+
 // job is a command line run in the background with &: a program, or a pipeline
 // of them.
 type job struct {
@@ -678,13 +681,25 @@ func reapJobs(w io.Writer, listRunning bool) {
 
 // redirection says where standard output or standard error goes: the file at
 // path, emptied first unless append is set, or the terminal when path is "".
+// As in bash, it's ambiguous when the word naming the file, kept in ambiguous,
+// expands to no word or to several.
 type redirection struct {
-	path   string
-	append bool
+	path      string
+	append    bool
+	ambiguous string
+}
+
+// set reports whether the redirection sends output anywhere but the terminal,
+// or would if it weren't ambiguous.
+func (r redirection) set() bool {
+	return r.path != "" || r.ambiguous != ""
 }
 
 // open opens the redirection's file for writing, creating it if needed.
 func (r redirection) open() (*os.File, error) {
+	if r.ambiguous != "" {
+		return nil, errors.New(r.ambiguous + ": ambiguous redirect")
+	}
 	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	if r.append {
 		flag = os.O_WRONLY | os.O_CREATE | os.O_APPEND
@@ -703,7 +718,7 @@ type command struct {
 // error to, adding them to files for the caller to close, and returns them in
 // place of stdout and stderr.
 func (c command) openOutputs(stdout, stderr *os.File, files *[]*os.File) (*os.File, *os.File, error) {
-	if c.stdout.path != "" {
+	if c.stdout.set() {
 		file, err := c.stdout.open()
 		if err != nil {
 			return nil, nil, err
@@ -711,7 +726,7 @@ func (c command) openOutputs(stdout, stderr *os.File, files *[]*os.File) (*os.Fi
 		*files = append(*files, file)
 		stdout = file
 	}
-	if c.stderr.path != "" {
+	if c.stderr.set() {
 		file, err := c.stderr.open()
 		if err != nil {
 			return nil, nil, err
@@ -735,29 +750,52 @@ func closeAll(files []*os.File) {
 // appends to the file instead. An unquoted & ending the line sets background.
 // Quoted text is taken literally, except that inside double quotes a backslash
 // escapes ", \, $ and `. Outside quotes, a backslash makes the next character
-// literal. Adjacent pieces join into one argument.
+// literal. Adjacent pieces join into one argument. Outside single quotes, a $
+// and a variable's name stand for the variable's value. As in bash, outside
+// double quotes too, the value splits into arguments at spaces, tabs and
+// newlines, and an empty one makes none, except in declare's NAME=VALUE
+// arguments; and a redirection whose file then isn't one argument is
+// ambiguous.
 func parseCommand(line string) (commands []command, background bool) {
-	var cur command // the command being parsed
-	var arg strings.Builder
-	inArg := false          // true once an argument has started, even an empty one like ''
-	plain := true           // the argument so far has no quotes or backslashes
+	var cur command         // the command being parsed
+	var words []string      // the arguments the word being parsed has split into so far
+	var arg strings.Builder // the one it goes on with
+	inArg := false          // true once arg has started, even as an empty one like ''
+	plain := true           // the word so far has no quotes, backslashes or variables
+	assignment := false     // the word is a NAME=VALUE argument of declare
+	start := 0              // the index in line where the word starts
 	var quote rune          // the quote character we're inside, or 0 when outside quotes
 	escaped := false        // the previous character was a backslash outside single quotes
-	var target *redirection // the redirection whose file the next argument names
+	var target *redirection // the redirection whose file the next word names
 	afterGreater := false   // the previous character was a > that started a redirection
-	endArg := func() {
-		if !inArg {
-			return
+	skip := 0               // the index in line just past the name of the variable a $ began
+	// split ends the argument in arg, if one has started, inside the word.
+	split := func() {
+		if inArg {
+			words = append(words, arg.String())
+			arg.Reset()
+			inArg = false
 		}
-		if target != nil {
-			target.path, target = arg.String(), nil
-		} else {
-			cur.args = append(cur.args, arg.String())
+	}
+	// endArg ends the word at index end in line, if one has started.
+	endArg := func(end int) {
+		split()
+		if target == nil {
+			cur.args = append(cur.args, words...)
+		} else if end > start {
+			if len(words) == 1 {
+				target.path = words[0]
+			} else {
+				target.ambiguous = line[start:end]
+			}
+			target = nil
 		}
-		arg.Reset()
-		inArg, plain = false, true
+		words, plain, assignment, start = nil, true, false, end+1
 	}
 	for i, r := range line {
+		if i < skip {
+			continue
+		}
 		doubled := afterGreater && r == '>'
 		afterGreater = false
 		switch {
@@ -771,12 +809,35 @@ func parseCommand(line string) (commands []command, background bool) {
 			escaped, plain = true, false
 		case quote != 0 && r == quote:
 			quote = 0
+		case r == '$' && quote != '\'' && leadingName.MatchString(line[i+1:]):
+			name := leadingName.FindString(line[i+1:])
+			skip = i + 1 + len(name)
+			plain = false
+			value := variables[name].value
+			if quote != 0 || assignment {
+				arg.WriteString(value)
+				break
+			}
+			if strings.TrimLeftFunc(value, blank) != value {
+				split()
+			}
+			for j, word := range strings.FieldsFunc(value, blank) {
+				if j > 0 {
+					split()
+				}
+				arg.WriteString(word)
+				inArg = true
+			}
+			if strings.TrimRightFunc(value, blank) != value {
+				split()
+			}
 		case quote != 0:
 			arg.WriteRune(r)
 		case r == '\'' || r == '"':
 			quote, inArg, plain = r, true, false
 		case doubled:
 			target.append = true
+			start = i + 1
 		case r == '>':
 			next := &cur.stdout
 			if n := arg.String(); plain && (n == "1" || n == "2") {
@@ -784,25 +845,35 @@ func parseCommand(line string) (commands []command, background bool) {
 					next = &cur.stderr
 				}
 				arg.Reset() // an unquoted 1 or 2 right before > picks the output
-				inArg = false
+				inArg, start = false, i
 			}
-			endArg()
+			endArg(i)
 			*next = redirection{} // replaces any earlier redirection of the same output
 			target, afterGreater = next, true
 		case r == '|':
-			endArg()
+			endArg(i)
 			commands = append(commands, cur)
 			cur, target = command{}, nil // a > right before the | names no file
 		case r == '&' && strings.TrimSpace(line[i+1:]) == "":
-			endArg()
+			endArg(i)
 			background = true
 		case r == ' ' || r == '\t':
-			endArg()
+			endArg(i)
 		default:
+			if r == '=' && plain && target == nil && len(cur.args) > 0 && cur.args[0] == "declare" &&
+				variableName.MatchString(strings.TrimSuffix(arg.String(), "+")) {
+				assignment = true
+			}
 			arg.WriteRune(r)
 			inArg = true
 		}
 	}
-	endArg()
+	endArg(len(line))
 	return append(commands, cur), background
+}
+
+// blank reports whether r is a character bash splits variables' values at: a
+// space, tab or newline.
+func blank(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n'
 }

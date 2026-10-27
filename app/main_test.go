@@ -136,11 +136,37 @@ declare foo=bar2 other=x
 declare -p missing foo other
 declare quoted='a"b\c$d` + "`" + `e!f'"'"'g' spaced="two  words" eq=a=b empty=
 declare -p foo=bar quoted spaced eq empty
-declare 1x=2 =y a-b=1 ok=1
-declare -p ok
+declare 1x=2 =y a-b=1 ok=1 _FOO=BAR x9_=1 67=x
+declare -p 1x ok _FOO x9_
 declare ap=one
 declare ap+=two new+=three
 declare -p ap new
+`},
+		{"variables", `declare Variable_1=value Variable_2=value2 empty= spaced="  a   b  " y="a b" cmd="echo hi" fd=2 q='a"b\c'
+echo $Variable_1 $Variable_2
+printf '[%s]\n' a $empty b $empty$empty
+printf '[%s]\n' a "$empty" b ''$empty
+printf '[%s]\n' $spaced
+printf '[%s]\n' x$spaced"y"
+printf '[%s]\n' "x$spaced"
+printf '[%s]\n' $Variable_1$Variable_2 $Variable_1-suffix $Variable_1_suffix
+printf '[%s]\n' $ a$ "$" "a$ b"
+printf '[%s]\n' "$Variable_1"'$Variable_1'\$Variable_1 "\$Variable_1"
+printf '[%s]\n' $q
+$cmd there
+declare x=$y
+declare -p x
+declare z="p=1 q2=2"
+declare $z
+declare -p p q2
+declare w=$spaced
+declare -p w
+echo $fd> f1.txt
+cat f1.txt
+echo out > $y
+echo out > $empty
+echo out > $Variable_1
+cat value
 `},
 		{"no newline at the end", "echo one\necho two"},
 	} {
@@ -777,6 +803,35 @@ func TestDeclare(t *testing.T) {
 	// value.
 	s.expect("declare fresh foo")
 	s.expect("declare -p fresh foo", "declare -- fresh", `declare -- foo="bar2"`)
+	// A name starts with a letter or underscore, then has letters, digits and
+	// underscores; for any other, no variable is made.
+	s.expect("declare 23=x", "declare: `23=x': not a valid identifier")
+	s.expect("declare -p 23", "declare: 23: not found")
+	s.expect("declare _FOO=bar")
+	s.expect("declare -p _FOO", `declare -- _FOO="bar"`)
+}
+
+func TestVariableExpansion(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Like the tester's program, it reports the arguments it's given.
+	writeScript(t, dir, "custom_exe_1234", `echo "Program was passed $(($# + 1)) args (including program name)."
+echo "Arg #0 (program name): ${0##*/}"
+i=1
+for arg do
+	echo "Arg #$i: $arg"
+	i=$((i + 1))
+done
+`)
+	s := startShell(t, dir, "PATH="+dir+":/usr/bin:/bin")
+	s.expect("declare Variable_1=Value_1")
+	s.expect("declare Variable_2=Value_2")
+	s.expect("custom_exe_1234 $Variable_1 $Variable_2",
+		"Program was passed 3 args (including program name).",
+		"Arg #0 (program name): custom_exe_1234",
+		"Arg #1: Value_1",
+		"Arg #2: Value_2")
+	s.expect("echo $Variable_1 $Variable_2", "Value_1 Value_2")
 }
 
 // The pseudo-terminal.
