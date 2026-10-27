@@ -42,14 +42,15 @@ type job struct {
 // jobs are the background jobs, oldest first.
 var jobs []job
 
-// history holds the command lines entered so far, oldest first, for the
-// history builtin. As in bash, blank lines aren't kept.
+// history holds the command lines entered so far and those read from history
+// files, oldest first, for the history builtin. As in bash, blank lines aren't
+// kept.
 var history []string
 
 // unappended holds the lines entered since history -a last ran, for it to
-// append to a file, and not the lines history -r reads in between. Bash instead
-// appends as many lines from the end of history as were entered, so it can
-// append lines it read in place of ones entered before them.
+// append to a file, and not the lines read from history files. Bash instead
+// appends as many lines from the end of history as were entered, so after
+// history -r it can append lines it read in place of ones entered before them.
 var unappended []string
 
 // remember adds a line to the list the Up arrow steps through, which readline
@@ -91,6 +92,11 @@ func main() {
 		completer.rl = rl
 		readLine = rl.Readline
 		remember = func(line string) { _ = rl.SaveHistory(line) }
+	}
+	// As in bash, history starts with the lines of the file $HISTFILE names,
+	// which the Up arrow reaches too.
+	if file := os.Getenv("HISTFILE"); file != "" {
+		readHistory(file)
 	}
 	for {
 		reapJobs(os.Stderr, false) // as in bash, jobs that have ended are reported before each prompt
@@ -363,9 +369,9 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 
 // runHistory runs the history builtin with args. With none, it lists the
 // whole history, numbered from 1, and with a number n, just the last n
-// entries. As in bash, -r adds the lines of a file to history, skipping empty
-// ones; -w writes history to a file, a line per entry, replacing what the file
-// held or creating it readable only by its owner; and -a adds the lines in
+// entries. As in bash, -r adds the lines of a file to history, as readHistory
+// reads them; -w writes history to a file, a line per entry, replacing what the
+// file held or creating it readable only by its owner; and -a adds the lines in
 // unappended to the end of a file the same way. The file is $HISTFILE unless
 // one is named, and one that can't be read or written is passed over without
 // a word, except that -a reports one it can't create.
@@ -379,12 +385,7 @@ func runHistory(args []string, stdout, stderr io.Writer) {
 		case file == "":
 			_, _ = fmt.Fprintln(stderr, "history: HISTFILE: parameter null or not set")
 		case args[0] == "-r":
-			data, _ := os.ReadFile(file)
-			for _, line := range strings.Split(string(data), "\n") {
-				if line = strings.TrimSuffix(line, "\r"); line != "" {
-					addHistory(line)
-				}
-			}
+			readHistory(file)
 		case args[0] == "-w":
 			_ = os.WriteFile(file, historyText(history), 0o600)
 		default:
@@ -403,6 +404,19 @@ func runHistory(args []string, stdout, stderr io.Writer) {
 	}
 	for i := first; i < len(history); i++ {
 		_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, history[i])
+	}
+}
+
+// readHistory adds the lines of file to history the way bash reads a history
+// file: it drops a carriage return before a newline, skips empty lines, and
+// leaves out a last line without a newline. A file it can't read adds nothing.
+func readHistory(file string) {
+	data, _ := os.ReadFile(file)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[:len(lines)-1] { // what follows the last newline isn't a line yet
+		if line = strings.TrimSuffix(line, "\r"); line != "" {
+			addHistory(line)
+		}
 	}
 }
 

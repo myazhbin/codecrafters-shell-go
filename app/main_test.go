@@ -676,6 +676,34 @@ func TestHistory(t *testing.T) {
 			"    5  echo hello",
 			"    6  history")
 	})
+	t.Run("read at startup", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history")
+		appendFile(t, file, "echo hello\necho world\n") // as the tester writes it
+		s := startShell(t, dir, "HISTFILE="+file)
+		s.expect("history", "    1  echo hello", "    2  echo world", "    3  history")
+		// As in bash, the Up arrow reaches the lines read, and history -a
+		// doesn't append them, as they weren't entered.
+		const up = "\x1b[A"
+		s.edit(up, "$ history")
+		s.edit(up, "$ echo world")
+		s.edit(up, "$ echo hello")
+		s.interrupt()
+		other := filepath.Join(dir, "other")
+		s.expect("history -a " + other)
+		fileHolds(t, other, "history\nhistory -a "+other+"\n")
+		// As in bash, history starts out empty when there's no such file, and a
+		// last line without a newline is left out, at startup and by history -r.
+		missing := startShell(t, dir, "HISTFILE="+filepath.Join(dir, "missing"))
+		missing.expect("history", "    1  history")
+		unfinished := filepath.Join(dir, "unfinished")
+		appendFile(t, unfinished, "echo a\necho b")
+		cut := startShell(t, dir, "HISTFILE="+unfinished)
+		cut.expect("history", "    1  echo a", "    2  history")
+		cut.expect("history -r " + unfinished)
+		cut.expect("history 2", "    4  echo a", "    5  history 2")
+	})
 }
 
 // The pseudo-terminal.
