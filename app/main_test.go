@@ -130,6 +130,17 @@ type echo | cat | wc -l
 		{"declare", `declare -p missing_variable
 declare -p one two 2> err.txt
 cat err.txt
+declare foo=bar
+declare -p foo
+declare foo=bar2 other=x
+declare -p missing foo other
+declare quoted='a"b\c$d` + "`" + `e!f'"'"'g' spaced="two  words" eq=a=b empty=
+declare -p foo=bar quoted spaced eq empty
+declare 1x=2 =y a-b=1 ok=1
+declare -p ok
+declare ap=one
+declare ap+=two new+=three
+declare -p ap new
 `},
 		{"no newline at the end", "echo one\necho two"},
 	} {
@@ -756,7 +767,16 @@ func TestDeclare(t *testing.T) {
 	t.Parallel()
 	s := startShell(t, t.TempDir())
 	s.expect("type declare", "declare is a shell builtin")
+	s.expect("declare foo=bar")
+	s.expect("declare -p foo", `declare -- foo="bar"`)
 	s.expect("declare -p missing_variable", "declare: missing_variable: not found")
+	s.expect("declare foo=bar2")
+	s.expect("declare -p foo", `declare -- foo="bar2"`)
+	// Declared without a value, a variable shows none, as in bash 5, where
+	// bash 3.2 shows an empty one; and declaring one again that way keeps its
+	// value.
+	s.expect("declare fresh foo")
+	s.expect("declare -p fresh foo", "declare -- fresh", `declare -- foo="bar2"`)
 }
 
 // The pseudo-terminal.
@@ -1309,6 +1329,10 @@ func writeFIFO(t *testing.T, path, text string) {
 		f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		if err == nil {
 			_, err = f.WriteString(text)
+			// On macOS, a reader still in open can miss a writer that comes and
+			// goes, and then wait for another forever, so this one stays a
+			// moment for it to finish opening.
+			time.Sleep(100 * time.Millisecond)
 			if closeErr := f.Close(); err == nil {
 				err = closeErr
 			}

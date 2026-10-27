@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,21 @@ var builtInCommands = map[string]bool{
 // completers maps a command name to the program registered with complete -C to
 // suggest completions for that command, until complete -r removes it.
 var completers = map[string]string{}
+
+// variable is a shell variable, made by declare. As in bash, one declared
+// without a value isn't set, which declare -p shows differently from an empty
+// value.
+type variable struct {
+	value string
+	set   bool
+}
+
+// variables holds the shell variables, by name.
+var variables = map[string]variable{}
+
+// variableName matches the names variables can have, as in bash: a letter or
+// underscore, then letters, digits and underscores.
+var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // job is a command line run in the background with &: a program, or a pipeline
 // of them.
@@ -380,12 +396,7 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 	case "history":
 		runHistory(args[1:], stdout, stderr)
 	case "declare":
-		// Nothing sets variables yet, so declare -p finds none of the names.
-		if len(args) > 1 && args[1] == "-p" {
-			for _, name := range args[2:] {
-				_, _ = fmt.Fprintln(stderr, "declare: "+name+": not found")
-			}
-		}
+		runDeclare(args[1:], stdout, stderr)
 	}
 	return false
 }
@@ -482,6 +493,55 @@ func strerror(err error) string {
 	}
 	reason := err.Error()
 	return strings.ToUpper(reason[:1]) + reason[1:]
+}
+
+// runDeclare runs the declare builtin with args. As in bash, each NAME=VALUE
+// sets the variable NAME to VALUE, NAME+=VALUE adds VALUE to the end of its
+// value, and NAME alone declares it without a value, unless it's declared
+// already. With -p, it shows each variable named, the way bash does, or
+// reports that there's none. It knows no other options.
+func runDeclare(args []string, stdout, stderr io.Writer) {
+	if len(args) > 0 && args[0] == "-p" {
+		for _, name := range args[1:] {
+			v, ok := variables[name]
+			switch {
+			case !ok:
+				_, _ = fmt.Fprintln(stderr, "declare: "+name+": not found")
+			case v.set:
+				_, _ = fmt.Fprintln(stdout, "declare -- "+name+"="+doubleQuoted(v.value))
+			default:
+				_, _ = fmt.Fprintln(stdout, "declare -- "+name)
+			}
+		}
+		return
+	}
+	for _, arg := range args {
+		name, value, set := strings.Cut(arg, "=")
+		add := false
+		if set {
+			name, add = strings.CutSuffix(name, "+")
+		}
+		switch {
+		case !variableName.MatchString(name):
+			_, _ = fmt.Fprintln(stderr, "declare: `"+arg+"': not a valid identifier")
+		case set:
+			if add {
+				value = variables[name].value + value
+			}
+			variables[name] = variable{value, true}
+		default:
+			if _, ok := variables[name]; !ok {
+				variables[name] = variable{}
+			}
+		}
+	}
+}
+
+// doubleQuoted returns s in double quotes, with a backslash before each ", \,
+// $ and ` in it, as declare -p shows a value. Bash shows one with a control
+// character in it, such as a tab, in $'...' instead.
+func doubleQuoted(s string) string {
+	return `"` + strings.NewReplacer(`"`, `\"`, `\`, `\\`, `$`, `\$`, "`", "\\`").Replace(s) + `"`
 }
 
 // runPipeline runs commands as a pipeline: each one's standard output goes

@@ -12,6 +12,7 @@ Testing this shell on the user's Mac (macOS 15). app/main_test.go already works 
 - Python ignores SIGPIPE, and a shell started from Python with `pty.fork()` + `execve` inherits that, as do its children (Go resets it for programs it starts; bash doesn't), so bash's pipelines misbehave there (e.g. `tail -f | head` never ends). Reset it to SIG_DFL in the child before exec. The Go tests don't have this problem.
 - Only BSD tail is installed: `tail -f x | head -n 5` ends only after one more line is written to x, in bash too. GNU tail on the Linux tester exits as soon as head does.
 - Readline redraws the whole line on every key, so raw pty bytes are unreadable; the tests feed them through a small screen emulator.
+- A reader blocked in `open()` on a FIFO can miss a writer that opens and closes at once, and then waits forever (Linux has no such race). writeFIFO used to do just that, so a job like `cat fifo &` now and then never ended: on 2026-10-26 TestReapingBeforePrompt failed once with waitGone's "process N is still there". A stress test stuck 2 of 480 cats; holding the write end open 50ms or 100ms before closing stuck none of 1440, so writeFIFO now holds it 100ms.
 
 **Why:** the first two cost a long investigation on 2026-10-25 before being traced to macOS rather than the shell; the SIGPIPE one made bash look broken on 2026-10-26.
 **How to apply:** keep these in mind when changing the tests or chasing a hang, and don't treat these symptoms as shell bugs. Related: [[codecrafters-stage-workflow]].
