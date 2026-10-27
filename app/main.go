@@ -46,6 +46,12 @@ var jobs []job
 // history builtin. As in bash, blank lines aren't kept.
 var history []string
 
+// unappended holds the lines entered since history -a last ran, for it to
+// append to a file, and not the lines history -r reads in between. Bash instead
+// appends as many lines from the end of history as were entered, so it can
+// append lines it read in place of ones entered before them.
+var unappended []string
+
 // remember adds a line to the list the Up arrow steps through, which readline
 // keeps, or does nothing when the shell isn't reading from a terminal.
 var remember = func(line string) {}
@@ -98,6 +104,7 @@ func main() {
 		}
 		if strings.TrimSpace(command) != "" {
 			addHistory(command) // before it runs, so history lists itself
+			unappended = append(unappended, command)
 		}
 		if runCommand(command) {
 			return
@@ -357,12 +364,13 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 // runHistory runs the history builtin with args. With none, it lists the
 // whole history, numbered from 1, and with a number n, just the last n
 // entries. As in bash, -r adds the lines of a file to history, skipping empty
-// ones, and -w writes history to a file, a line per entry, replacing what the
-// file held or creating it readable only by its owner. The file is $HISTFILE
-// unless one is named, and one that can't be read or written is passed over
-// without a word.
+// ones; -w writes history to a file, a line per entry, replacing what the file
+// held or creating it readable only by its owner; and -a adds the lines in
+// unappended to the end of a file the same way. The file is $HISTFILE unless
+// one is named, and one that can't be read or written is passed over without
+// a word, except that -a reports one it can't create.
 func runHistory(args []string, stdout, stderr io.Writer) {
-	if len(args) > 0 && (args[0] == "-r" || args[0] == "-w") {
+	if len(args) > 0 && slices.Contains([]string{"-r", "-w", "-a"}, args[0]) {
 		file := os.Getenv("HISTFILE")
 		if len(args) > 1 {
 			file = args[1]
@@ -377,12 +385,10 @@ func runHistory(args []string, stdout, stderr io.Writer) {
 					addHistory(line)
 				}
 			}
+		case args[0] == "-w":
+			_ = os.WriteFile(file, historyText(history), 0o600)
 		default:
-			var lines strings.Builder
-			for _, line := range history {
-				lines.WriteString(line + "\n")
-			}
-			_ = os.WriteFile(file, []byte(lines.String()), 0o600)
+			appendHistory(file, stderr)
 		}
 		return
 	}
@@ -398,6 +404,47 @@ func runHistory(args []string, stdout, stderr io.Writer) {
 	for i := first; i < len(history); i++ {
 		_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, history[i])
 	}
+}
+
+// appendHistory adds the lines in unappended to the end of file, creating it
+// readable only by its owner if needed, and empties unappended. As in bash, a
+// file that isn't there and can't be created is reported, and then the lines
+// wait for the next try; when one that's there can't be written, they're
+// dropped without a word.
+func appendHistory(file string, stderr io.Writer) {
+	_, err := os.Stat(file)
+	missing := errors.Is(err, os.ErrNotExist)
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil && missing {
+		_, _ = fmt.Fprintf(stderr, "history: %s: cannot create: %s\n", file, strerror(err))
+		return
+	}
+	if err == nil {
+		_, _ = f.Write(historyText(unappended))
+		_ = f.Close()
+	}
+	unappended = nil
+}
+
+// historyText returns lines as a history file holds them, each ending in a
+// newline.
+func historyText(lines []string) []byte {
+	var text strings.Builder
+	for _, line := range lines {
+		text.WriteString(line + "\n")
+	}
+	return []byte(text.String())
+}
+
+// strerror returns the system's reason for err worded as C's strerror words it,
+// as bash's messages do: "No such file or directory".
+func strerror(err error) string {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		err = pathErr.Err
+	}
+	reason := err.Error()
+	return strings.ToUpper(reason[:1]) + reason[1:]
 }
 
 // runPipeline runs commands as a pipeline: each one's standard output goes

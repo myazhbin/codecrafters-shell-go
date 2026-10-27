@@ -591,22 +591,64 @@ func TestHistory(t *testing.T) {
 		s.expect("echo world", "world")
 		s.expect("history -w " + file)
 		want := "echo hello\necho world\nhistory -w " + file + "\n"
-		if got, err := os.ReadFile(file); err != nil || string(got) != want {
-			t.Errorf("history -w wrote %q (%v); want %q", got, err, want)
-		}
-		if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
-			t.Errorf("history -w made %v (%v); want it readable only by its owner, as bash does", info.Mode(), err)
-		}
+		fileHolds(t, file, want)
+		ownerOnly(t, file)
 		s.expect("history -w " + file) // writing again replaces what the file held
 		want += "history -w " + file + "\n"
-		if got, err := os.ReadFile(file); err != nil || string(got) != want {
-			t.Errorf("history -w wrote %q (%v) the second time; want %q", got, err, want)
-		}
+		fileHolds(t, file, want)
 		s.expect("history -w " + filepath.Join(dir, "no", "such", "file")) // as in bash, without a word
 		// What history -w writes, history -r reads back.
 		fresh := startShell(t, dir)
 		fresh.expect("history -r " + file)
 		fresh.expect("history 3", "    4  history -w "+file, "    5  history -w "+file, "    6  history 3")
+	})
+	t.Run("append to a file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history")
+		appendFile(t, file, "echo initial_command_1\necho initial_command_2\n") // as the tester writes it
+		s := startShell(t, dir, "HISTFILE="+file)
+		s.expect("echo new_command", "new_command")
+		s.expect("history -a " + file)
+		want := "echo initial_command_1\necho initial_command_2\necho new_command\nhistory -a " + file + "\n"
+		fileHolds(t, file, want)
+		// Again, it appends just the lines entered since it last ran, here to
+		// $HISTFILE, as no file is named.
+		s.expect("echo again", "again")
+		s.expect("history -a")
+		want += "echo again\nhistory -a\n"
+		fileHolds(t, file, want)
+		// It appends the commands run since it last ran, as the stage says, so
+		// not lines history -r reads. Bash would append "echo read" in place of
+		// "history -r", taking as many lines from the end of history as were
+		// entered. As in bash, -w changes nothing for -a.
+		other := filepath.Join(dir, "other")
+		appendFile(t, other, "echo read\n")
+		s.expect("history -r " + other)
+		s.expect("history -w " + other)
+		s.expect("history -a")
+		want += "history -r " + other + "\nhistory -w " + other + "\nhistory -a\n"
+		fileHolds(t, file, want)
+	})
+	t.Run("append errors", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history") // not there yet
+		s := startShell(t, dir)
+		// As in bash, it says when there's no file, or when it can't create one,
+		// and then the lines wait for the next history -a.
+		s.expect("history -a", "history: HISTFILE: parameter null or not set")
+		missing := filepath.Join(dir, "no", "such", "file")
+		s.expect("history -a "+missing, "history: "+missing+": cannot create: No such file or directory")
+		s.expect("history -a " + file)
+		want := "history -a\nhistory -a " + missing + "\nhistory -a " + file + "\n"
+		fileHolds(t, file, want)
+		ownerOnly(t, file)
+		// A file that's there but can't be written to, such as a directory, is
+		// passed over without a word, and the lines with it, as in bash.
+		s.expect("history -a " + dir)
+		s.expect("history -a " + file)
+		fileHolds(t, file, want+"history -a "+file+"\n")
 	})
 	t.Run("the Up arrow", func(t *testing.T) {
 		t.Parallel()
@@ -1185,6 +1227,25 @@ func appendFile(t *testing.T, path, text string) {
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fileHolds fails the test unless the file at path holds want.
+func fileHolds(t *testing.T, path, want string) {
+	t.Helper()
+	if got, err := os.ReadFile(path); err != nil || string(got) != want {
+		t.Errorf("%s holds %q (%v); want %q", path, got, err, want)
+	}
+}
+
+// ownerOnly fails the test unless the file at path is readable only by its
+// owner, as bash makes history files.
+func ownerOnly(t *testing.T, path string) {
+	t.Helper()
+	if info, err := os.Stat(path); err != nil {
+		t.Error(err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Errorf("%s is %v; want it readable only by its owner, as bash makes history files", path, info.Mode())
 	}
 }
 
