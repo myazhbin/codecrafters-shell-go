@@ -46,6 +46,18 @@ var jobs []job
 // history builtin. As in bash, blank lines aren't kept.
 var history []string
 
+// remember adds a line to the list the Up arrow steps through, which readline
+// keeps, or does nothing when the shell isn't reading from a terminal.
+var remember = func(line string) {}
+
+// addHistory adds line to history, and for the Up arrow. Readline doesn't save
+// typed lines itself: it would do that from its own goroutine after handing a
+// line over, racing whatever the shell adds, such as the lines history -r reads.
+func addHistory(line string) {
+	history = append(history, line)
+	remember(line)
+}
+
 func main() {
 	// Input from a file or pipe is read as plain lines, since readline would
 	// treat a Tab in it as a request to complete.
@@ -62,6 +74,8 @@ func main() {
 			AutoComplete: completer,
 			Listener:     completer,
 			FuncGetWidth: terminalWidth,
+			// addHistory saves the lines instead.
+			DisableAutoSaveHistory: true,
 		})
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Error setting up input:", err)
@@ -70,6 +84,7 @@ func main() {
 		defer rl.Close()
 		completer.rl = rl
 		readLine = rl.Readline
+		remember = func(line string) { _ = rl.SaveHistory(line) }
 	}
 	for {
 		reapJobs(os.Stderr, false) // as in bash, jobs that have ended are reported before each prompt
@@ -82,7 +97,7 @@ func main() {
 			os.Exit(1)
 		}
 		if strings.TrimSpace(command) != "" {
-			history = append(history, command) // before it runs, so history lists itself
+			addHistory(command) // before it runs, so history lists itself
 		}
 		if runCommand(command) {
 			return
@@ -334,6 +349,26 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 	case "jobs":
 		reapJobs(stdout, true)
 	case "history":
+		if len(args) > 1 && args[1] == "-r" {
+			// As in bash: the file is $HISTFILE unless one is named, its empty
+			// lines are skipped, a file that can't be read adds nothing, without
+			// a word, and the Up arrow can recall the lines added.
+			file := os.Getenv("HISTFILE")
+			if len(args) > 2 {
+				file = args[2]
+			}
+			if file == "" {
+				_, _ = fmt.Fprintln(stderr, "history: HISTFILE: parameter null or not set")
+				break
+			}
+			data, _ := os.ReadFile(file)
+			for _, line := range strings.Split(string(data), "\n") {
+				if line = strings.TrimSuffix(line, "\r"); line != "" {
+					addHistory(line)
+				}
+			}
+			break
+		}
 		first := 0 // the index of the first entry to list
 		if len(args) > 1 {
 			// As in bash, a number n lists just the last n entries.

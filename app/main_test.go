@@ -562,6 +562,52 @@ func TestHistory(t *testing.T) {
 			"    6  history 100")
 		s.expect("history abc", "history: abc: numeric argument required")
 	})
+	t.Run("read from a file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history")
+		appendFile(t, file, "echo hello\necho world\n\n") // as the tester writes it, ending in an empty line
+		s := startShell(t, dir)
+		s.expect("history -r " + file)
+		s.expect("history",
+			"    1  history -r "+file,
+			"    2  echo hello",
+			"    3  echo world",
+			"    4  history")
+		missing := filepath.Join(dir, "missing")
+		s.expect("history -r " + missing) // as in bash, it adds nothing, without a word
+		s.expect("history -r", "history: HISTFILE: parameter null or not set")
+		s.expect("history 3",
+			"    5  history -r "+missing,
+			"    6  history -r",
+			"    7  history 3")
+	})
+	t.Run("the Up arrow", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history")
+		appendFile(t, file, "echo hello\necho world\n")
+		s := startShell(t, dir)
+		s.expect("echo typed", "typed")
+		s.expect("history -r " + file)
+		// Up steps back through lines read in and lines typed alike, as in
+		// bash, and Down forward again.
+		const up, down = "\x1b[A", "\x1b[B"
+		s.edit(up, "$ echo world")
+		s.edit(up, "$ echo hello")
+		s.edit(up, "$ history -r "+file)
+		s.edit(up, "$ echo typed")
+		s.edit(down, "$ history -r "+file)
+		s.edit(down, "$ echo hello")
+		sameLines(t, "Enter on a recalled line", s.enter("\r"), "hello")
+		s.expect("history",
+			"    1  echo typed",
+			"    2  history -r "+file,
+			"    3  echo hello",
+			"    4  echo world",
+			"    5  echo hello",
+			"    6  history")
+	})
 }
 
 // The pseudo-terminal.
@@ -953,6 +999,14 @@ func (s *session) tab(keys, want string, bell bool) {
 	if !bell && s.poll(300*time.Millisecond, rang) {
 		s.t.Errorf("the bell rang after %q", keys)
 	}
+}
+
+// edit types keys that change the line being edited, such as the Up arrow,
+// and waits until the line reads want.
+func (s *session) edit(keys, want string) {
+	s.t.Helper()
+	s.send(keys)
+	s.waitFor("the line to read "+strconv.Quote(want), func() bool { return s.screen.cursorLine() == want })
 }
 
 // jobStart matches the line the shell shows when a job starts.
