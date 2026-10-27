@@ -84,7 +84,7 @@ cat err.txt
 echo '&' "&" \& a\&b
 echo 'ends with &'
 echo ends with \&
-type echo jobs history sleep
+type echo jobs history declare sleep
 nosuchcmd 2> nf.txt
 cat nf.txt
 `},
@@ -744,6 +744,14 @@ func TestHistory(t *testing.T) {
 		want += "echo saved\nhistory -a\necho from elsewhere\necho new\n"
 		fileHolds(t, file, want)
 	})
+}
+
+// Shell variables.
+
+func TestDeclare(t *testing.T) {
+	t.Parallel()
+	s := startShell(t, t.TempDir())
+	s.expect("type declare", "declare is a shell builtin")
 }
 
 // The pseudo-terminal.

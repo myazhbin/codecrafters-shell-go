@@ -25,6 +25,7 @@ var builtInCommands = map[string]bool{
 	"complete": true,
 	"jobs":     true,
 	"history":  true,
+	"declare":  true,
 }
 
 // completers maps a command name to the program registered with complete -C to
