@@ -29,7 +29,8 @@ var builtInCommands = map[string]bool{
 // suggest completions for that command, until complete -r removes it.
 var completers = map[string]string{}
 
-// job is a program started in the background with &.
+// job is a command line run in the background with &: a program, or a pipeline
+// of them.
 type job struct {
 	number  int
 	command string        // the command line that started it, without the &
@@ -234,33 +235,41 @@ func terminalWidth() int {
 	return 80
 }
 
-// runCommand runs one command line and reports whether the shell should exit.
-// Only a program runs in the background; a builtin ending in & runs in the shell
-// as usual.
+// runCommand runs one command line, a builtin or a pipeline of programs, and
+// reports whether the shell should exit. Only programs run in the background; a
+// builtin ending in & runs in the shell as usual. In a pipeline, every command
+// runs as a program, even one named like a builtin.
 func runCommand(line string) (exit bool) {
-	args, stdoutFile, stderrFile, background := parseCommand(line)
-	if len(args) == 0 {
+	commands, background := parseCommand(line)
+	for _, c := range commands {
+		if len(c.args) == 0 {
+			if len(commands) > 1 {
+				_, _ = fmt.Fprintln(os.Stderr, "syntax error near unexpected token `|'")
+			}
+			return false
+		}
+	}
+	if len(commands) == 1 && builtInCommands[commands[0].args[0]] {
+		return runBuiltin(commands[0])
+	}
+	runPrograms(commands, background, line)
+	return false
+}
+
+// runBuiltin runs c, a builtin, and reports whether the shell should exit.
+func runBuiltin(c command) (exit bool) {
+	var files []*os.File
+	defer func() {
+		for _, file := range files {
+			_ = file.Close()
+		}
+	}()
+	stdout, stderr, err := c.openOutputs(os.Stdout, os.Stderr, &files)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		return false
 	}
-	stdout, stderr := os.Stdout, os.Stderr
-	if stdoutFile.path != "" {
-		file, err := stdoutFile.open()
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return false
-		}
-		defer file.Close()
-		stdout = file
-	}
-	if stderrFile.path != "" {
-		file, err := stderrFile.open()
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return false
-		}
-		defer file.Close()
-		stderr = file
-	}
+	args := c.args
 	switch args[0] {
 	case "exit":
 		return true
@@ -319,45 +328,93 @@ func runCommand(line string) (exit bool) {
 		}
 	case "jobs":
 		reapJobs(stdout, true)
-	default:
-		if _, err := exec.LookPath(args[0]); err != nil {
-			_, _ = fmt.Fprintln(stderr, args[0]+": command not found")
-		} else {
-			cmd := exec.Command(args[0], args[1:]...)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = stdout
-			cmd.Stderr = stderr
-			if !background {
-				_ = cmd.Run()
-			} else if err := startJob(cmd, line); err != nil {
-				_, _ = fmt.Fprintln(stderr, err)
-			}
-		}
 	}
 	return false
 }
 
-// startJob starts cmd in the background for line, a command line ending in &,
-// and adds it to jobs. Like bash, it numbers the job one more than the newest
-// one, or 1 if there are none, and reports the number and process ID on the
-// shell's standard error.
-func startJob(cmd *exec.Cmd, line string) error {
-	if err := cmd.Start(); err != nil {
-		return err
+// runPrograms runs commands, which name programs, as a pipeline: each one's
+// standard output goes through a pipe to the next one's standard input, unless
+// it's redirected. It waits for them all to finish or, with background, makes
+// them a job for line. As in bash, a program that can't be run is reported and
+// the rest of the pipeline runs without it.
+func runPrograms(commands []command, background bool, line string) {
+	var files []*os.File // the shell's copies of pipe ends and redirected files
+	var cmds []*exec.Cmd
+	stdin := os.Stdin
+	for i, c := range commands {
+		stdout := os.Stdout
+		var next *os.File // the read end of the pipe to the next program
+		if i < len(commands)-1 {
+			r, w, err := os.Pipe()
+			if err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, err)
+				break
+			}
+			files = append(files, r, w)
+			stdout, next = w, r
+		}
+		if cmd := startProgram(c, stdin, stdout, &files); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		stdin = next
 	}
+	// Once the shell lets go of the pipes, a program reads the end of its input
+	// when the one before it exits, and one writing to a program that has exited
+	// gets SIGPIPE, as in tail -f | head.
+	for _, file := range files {
+		_ = file.Close()
+	}
+	if background && len(cmds) > 0 {
+		addJob(cmds, line)
+		return
+	}
+	for _, cmd := range cmds {
+		_ = cmd.Wait()
+	}
+}
+
+// startProgram starts c, a program, reading from stdin and writing to stdout
+// and the shell's standard error unless c redirects them, and returns it, or
+// reports why it couldn't and returns nil. It adds the files it opens to files,
+// for the caller to close.
+func startProgram(c command, stdin, stdout *os.File, files *[]*os.File) *exec.Cmd {
+	stdout, stderr, err := c.openOutputs(stdout, os.Stderr, files)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		return nil
+	}
+	if _, err := exec.LookPath(c.args[0]); err != nil {
+		_, _ = fmt.Fprintln(stderr, c.args[0]+": command not found")
+		return nil
+	}
+	cmd := exec.Command(c.args[0], c.args[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	if err := cmd.Start(); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return nil
+	}
+	return cmd
+}
+
+// addJob makes cmds, the started programs of line, a command line ending in &,
+// a job. Like bash, it numbers the job one more than the newest one, or 1 if
+// there are none, and reports the number and the last program's process ID on
+// the shell's standard error.
+func addJob(cmds []*exec.Cmd, line string) {
 	number := 1
 	if len(jobs) > 0 {
 		number = jobs[len(jobs)-1].number + 1
 	}
-	command := strings.TrimSpace(line[:strings.LastIndex(line, "&")])
-	j := job{number, command, make(chan struct{})}
+	text := strings.TrimSpace(line[:strings.LastIndex(line, "&")])
+	j := job{number, text, make(chan struct{})}
 	jobs = append(jobs, j)
-	_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", number, cmd.Process.Pid)
+	_, _ = fmt.Fprintf(os.Stderr, "[%d] %d\n", number, cmds[len(cmds)-1].Process.Pid)
 	go func() {
-		_ = cmd.Wait() // reaps it once it exits
+		for _, cmd := range cmds {
+			_ = cmd.Wait() // reaps it once it exits
+		}
 		close(j.done)
 	}()
-	return nil
 }
 
 // reapJobs lists to w, the way bash's jobs does, each job that has ended, as
@@ -401,13 +458,45 @@ func (r redirection) open() (*os.File, error) {
 	return os.OpenFile(r.path, flag, 0o666)
 }
 
-// parseCommand splits line into arguments at unquoted spaces and tabs, and
-// picks out where standard output (> or 1>) and standard error (2>) go; a
-// doubled >> appends to the file instead. An unquoted & ending the line sets
-// background. Quoted text is taken literally, except that inside double
-// quotes a backslash escapes ", \, $ and `. Outside quotes, a backslash makes
-// the next character literal. Adjacent pieces join into one argument.
-func parseCommand(line string) (args []string, stdoutFile, stderrFile redirection, background bool) {
+// command is one command of a pipeline: its arguments, and where its standard
+// output and standard error go.
+type command struct {
+	args           []string
+	stdout, stderr redirection
+}
+
+// openOutputs opens the files c redirects its standard output and standard
+// error to, adding them to files for the caller to close, and returns them in
+// place of stdout and stderr.
+func (c command) openOutputs(stdout, stderr *os.File, files *[]*os.File) (*os.File, *os.File, error) {
+	if c.stdout.path != "" {
+		file, err := c.stdout.open()
+		if err != nil {
+			return nil, nil, err
+		}
+		*files = append(*files, file)
+		stdout = file
+	}
+	if c.stderr.path != "" {
+		file, err := c.stderr.open()
+		if err != nil {
+			return nil, nil, err
+		}
+		*files = append(*files, file)
+		stderr = file
+	}
+	return stdout, stderr, nil
+}
+
+// parseCommand splits line at unquoted |s into the commands of a pipeline, and
+// each command into arguments at unquoted spaces and tabs, picking out where
+// its standard output (> or 1>) and standard error (2>) go; a doubled >>
+// appends to the file instead. An unquoted & ending the line sets background.
+// Quoted text is taken literally, except that inside double quotes a backslash
+// escapes ", \, $ and `. Outside quotes, a backslash makes the next character
+// literal. Adjacent pieces join into one argument.
+func parseCommand(line string) (commands []command, background bool) {
+	var cur command // the command being parsed
 	var arg strings.Builder
 	inArg := false          // true once an argument has started, even an empty one like ''
 	plain := true           // the argument so far has no quotes or backslashes
@@ -422,7 +511,7 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 		if target != nil {
 			target.path, target = arg.String(), nil
 		} else {
-			args = append(args, arg.String())
+			cur.args = append(cur.args, arg.String())
 		}
 		arg.Reset()
 		inArg, plain = false, true
@@ -448,10 +537,10 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 		case doubled:
 			target.append = true
 		case r == '>':
-			next := &stdoutFile
+			next := &cur.stdout
 			if n := arg.String(); plain && (n == "1" || n == "2") {
 				if n == "2" {
-					next = &stderrFile
+					next = &cur.stderr
 				}
 				arg.Reset() // an unquoted 1 or 2 right before > picks the output
 				inArg = false
@@ -459,6 +548,10 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 			endArg()
 			*next = redirection{} // replaces any earlier redirection of the same output
 			target, afterGreater = next, true
+		case r == '|':
+			endArg()
+			commands = append(commands, cur)
+			cur, target = command{}, nil // a > right before the | names no file
 		case r == '&' && strings.TrimSpace(line[i+1:]) == "":
 			endArg()
 			background = true
@@ -470,5 +563,5 @@ func parseCommand(line string) (args []string, stdoutFile, stderrFile redirectio
 		}
 	}
 	endArg()
-	return args, stdoutFile, stderrFile, background
+	return append(commands, cur), background
 }
