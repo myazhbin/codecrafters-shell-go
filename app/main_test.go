@@ -127,6 +127,7 @@ nosuchcmd | cat | wc -l
 echo hi | nosuchcmd | wc -l
 type echo | cat | wc -l
 `},
+		{"no newline at the end", "echo one\necho two"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -145,8 +146,8 @@ type echo | cat | wc -l
 const input = "raspberry strawberry\npear mango\npineapple apple\nbanana grape\nkiwi lemon\n"
 
 // runScript runs program with args, reading the command lines in script
-// without a terminal, in a new directory holding input.txt, and returns
-// everything it writes.
+// without a terminal until their end, which ends it as exit would, in a new
+// directory holding input.txt, and returns everything it writes.
 func runScript(t *testing.T, program, script string, args ...string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -157,7 +158,7 @@ func runScript(t *testing.T, program, script string, args ...string) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Dir, cmd.Env = dir, shellEnv()
-	cmd.Stdin = strings.NewReader(script + "exit\n")
+	cmd.Stdin = strings.NewReader(script)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out // one pipe, so messages land in order
 	cmd.WaitDelay = time.Second
@@ -704,6 +705,35 @@ func TestHistory(t *testing.T) {
 		cut.expect("history -r " + unfinished)
 		cut.expect("history 2", "    4  echo a", "    5  history 2")
 	})
+	t.Run("write on exit", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history") // not there yet
+		s := startShell(t, dir, "HISTFILE="+file)
+		s.expect("echo hello", "hello")
+		s.expect("echo world", "world")
+		s.exit("exit\r")
+		want := "echo hello\necho world\nexit\n"
+		fileHolds(t, file, want)
+		ownerOnly(t, file)
+		// As in bash, it appends the lines entered since history -a last ran,
+		// rather than writing the file anew: the next shell reads the lines in
+		// but adds just its own, and lines added to the file meanwhile stay.
+		// Ctrl-D on an empty line ends the shell as exit does, as in bash,
+		// without being a line itself.
+		next := startShell(t, dir, "HISTFILE="+file)
+		next.expect("echo saved", "saved")
+		next.expect("history -a")
+		appendFile(t, file, "echo from elsewhere\n")
+		next.expect("echo new", "new")
+		next.exit("\x04")
+		want += "echo saved\nhistory -a\necho from elsewhere\necho new\n"
+		fileHolds(t, file, want)
+		// When it can't write the file, it exits all the same, as bash does.
+		lost := startShell(t, dir, "HISTFILE="+filepath.Join(dir, "no", "such", "file"))
+		lost.expect("echo lost", "lost")
+		lost.exit("exit\r")
+	})
 }
 
 // The pseudo-terminal.
@@ -949,10 +979,15 @@ func (s *session) read() {
 	}
 }
 
-// close ends the shell with exit, then any programs it left running, which
-// would keep the terminal open, and checks that the race detector kept quiet.
+// close ends the shell with exit, unless the test has, then any programs it
+// left running, which would keep the terminal open, and checks that the race
+// detector kept quiet.
 func (s *session) close() {
-	_, _ = s.control.WriteString("exit\r")
+	select {
+	case <-s.closed: // nothing would read it
+	default:
+		_, _ = s.control.WriteString("exit\r")
+	}
 	exited := make(chan struct{})
 	go func() {
 		_ = s.cmd.Wait()
@@ -1077,6 +1112,28 @@ func (s *session) expect(line string, want ...string) {
 func (s *session) interrupt() {
 	s.t.Helper()
 	sameLines(s.t, "Ctrl-C", s.enter("\x03"))
+}
+
+// exit types keys that end the shell, such as exit and Enter, and waits until
+// it has closed the terminal. It checks that the line then reads "$ exit", as
+// bash shows Ctrl-D too, that nothing showed after it, and that the shell
+// exited with status 0.
+func (s *session) exit(keys string) {
+	s.t.Helper()
+	start := s.row()
+	s.send(keys)
+	select {
+	case <-s.closed:
+	case <-time.After(timeout):
+		s.t.Fatalf("the shell didn't exit; the screen reads:\n%s", s.dump())
+	}
+	s.mu.Lock()
+	lines := s.screen.texts(start, len(s.screen.rows))
+	s.mu.Unlock()
+	sameLines(s.t, strconv.Quote(keys), lines, "$ exit")
+	if err := s.cmd.Wait(); err != nil {
+		s.t.Errorf("the shell exited with %v", err)
+	}
 }
 
 // tab types keys, ending in a Tab, and fails the test unless the line being

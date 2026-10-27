@@ -48,9 +48,10 @@ var jobs []job
 var history []string
 
 // unappended holds the lines entered since history -a last ran, for it to
-// append to a file, and not the lines read from history files. Bash instead
-// appends as many lines from the end of history as were entered, so after
-// history -r it can append lines it read in place of ones entered before them.
+// append to a file, as the shell also does to $HISTFILE on exit; lines read
+// from history files aren't among them. Bash instead appends as many lines
+// from the end of history as were entered, so after history -r it can append
+// lines it read in place of ones entered before them.
 var unappended []string
 
 // remember adds a line to the list the Up arrow steps through, which readline
@@ -81,6 +82,9 @@ func main() {
 			AutoComplete: completer,
 			Listener:     completer,
 			FuncGetWidth: terminalWidth,
+			// Ctrl-D on an empty line shows exit after the prompt, as in bash,
+			// rather than ^D.
+			EOFPrompt: "exit",
 			// addHistory saves the lines instead.
 			DisableAutoSaveHistory: true,
 		})
@@ -104,7 +108,13 @@ func main() {
 		if errors.Is(err, readline.ErrInterrupt) {
 			continue // Ctrl-C drops the line being typed
 		}
-		if err != nil {
+		// As in bash, the end of the input, such as Ctrl-D on an empty line,
+		// ends the shell as exit does, though a last line without a newline
+		// runs first.
+		if errors.Is(err, io.EOF) && command == "" {
+			break
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
 			_, _ = fmt.Fprintln(os.Stderr, "Error reading input:", err)
 			os.Exit(1)
 		}
@@ -113,8 +123,13 @@ func main() {
 			unappended = append(unappended, command)
 		}
 		if runCommand(command) {
-			return
+			break
 		}
+	}
+	// As in bash, the lines entered since history -a last ran are added to the
+	// file $HISTFILE names on the way out, without a word if that fails.
+	if file := os.Getenv("HISTFILE"); file != "" {
+		appendHistory(file, io.Discard)
 	}
 }
 
