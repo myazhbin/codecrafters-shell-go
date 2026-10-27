@@ -8,7 +8,7 @@ metadata:
 The user pastes each CodeCrafters "Build your own shell" stage (description and tests) and wants it implemented in app/main.go (Go). They run `codecrafters submit` themselves, so don't commit or submit unless asked. That command commits every untracked file; the user confirmed on 2026-10-25 that committing the .claude/ folder with submissions is fine, so don't suggest gitignoring it.
 
 **Why:** they review and submit each stage on their own; `.idea/` also went in through a submit.
-**How to apply:** implement the stage, add its tests to src/main_test.go (the user asked on 2026-10-26 for every test to live there), run `go test ./src/`, report, and give the `codecrafters submit` command. See [[macos-shell-testing-pitfalls]].
+**How to apply:** implement the stage, add its tests to app/main_test.go (on 2026-10-26 the user asked for every test to live in one file, then moved it from src/ to sit next to main.go, in package main), run `go test ./app/`, report, and give the `codecrafters submit` command. See [[macos-shell-testing-pitfalls]].
 - To check behavior against bash by hand, use bash 5.3 at /usr/local/bin/bash (/bin/bash is 3.2).
 - Where a stage's spec and bash disagree, the spec wins. Seen so far: no bell when Tab extends to the common prefix (bash rings), `complete -r` silent for an unregistered name (bash errors), the two-space match list, and `type`'s "<name>: not found" (bash: "type: <name>: not found"). macOS bash also pads the `jobs` status column to 27 where the spec (Linux bash) says 24.
 - Bash notices a job's exit asynchronously, so right after a job ends its `jobs` can still say Running; the tests wait for the process to be reaped before checking.

@@ -1,10 +1,10 @@
-// Tests for the shell in ../app. TestMain builds it, and the tests run it as a
-// separate program the way a person or the CodeCrafters tester would: mostly
-// on a pseudo-terminal, so line editing, Tab completion and job control behave
-// as they do for real, and partly by piping the same command lines into it and
+// Tests for the shell. TestMain builds it, and the tests run it as a separate
+// program the way a person or the CodeCrafters tester would: mostly on a
+// pseudo-terminal, so line editing, Tab completion and job control behave as
+// they do for real, and partly by piping the same command lines into it and
 // into bash and comparing what they print. Every stage gets tests here.
 //
-// Run them from the repository's root with: go test ./src/
+// Run them from the repository's root with: go test ./app/
 package main
 
 import (
@@ -44,9 +44,9 @@ func TestMain(m *testing.M) {
 	shellPath = filepath.Join(dir, "shell")
 	// Jobs end in goroutines, so build with the race detector when the
 	// toolchain can; a session fails if its shell reports a race.
-	if out, err := exec.Command("go", "build", "-race", "-o", shellPath, "../app").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-race", "-o", shellPath, ".").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "building without the race detector, which failed: %s\n", out)
-		if out, err := exec.Command("go", "build", "-o", shellPath, "../app").CombinedOutput(); err != nil {
+		if out, err := exec.Command("go", "build", "-o", shellPath, ".").CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "building the shell: %v\n%s", err, out)
 			os.Exit(1)
 		}
@@ -84,7 +84,7 @@ cat err.txt
 echo '&' "&" \& a\&b
 echo 'ends with &'
 echo ends with \&
-type echo jobs sleep
+type echo jobs history sleep
 nosuchcmd 2> nf.txt
 cat nf.txt
 `},
@@ -115,6 +115,17 @@ echo one | cat | cat
 type exit type | cat
 exit | cat
 echo still here
+`},
+		{"longer pipelines", `cat input.txt | head -n 3 | wc
+echo a > file-a
+echo b > file-b
+echo c > other
+ls | tail -n 3 | head -n 2 | grep file
+cat input.txt | sort | head -n 4 | tail -n 2 | wc -l
+printf 'x\n' | cat | cat | cat | cat
+nosuchcmd | cat | wc -l
+echo hi | nosuchcmd | wc -l
+type echo | cat | wc -l
 `},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -483,6 +494,41 @@ func TestBuiltinsInPipelines(t *testing.T) {
 	s.expect("complete -p git | cat", "complete -C '/bin/true' git")
 	s.expect("exit | cat") // as in bash, exit only ends its part of the pipeline
 	s.expect("echo still here", "still here")
+}
+
+func TestLongerPipelines(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	foo := filepath.Join(dir, "foo")
+	if err := os.Mkdir(foo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, filepath.Join(foo, "file"), "abc\nde\nfg\nhij\n")
+	for _, name := range []string{"apple", "grape", "zebra"} {
+		appendFile(t, filepath.Join(foo, name), name+"\n")
+	}
+	s := startShell(t, dir)
+	if got := s.run("cat foo/file | head -n 3 | wc"); len(got) != 1 || !slices.Equal(strings.Fields(got[0]), []string{"3", "3", "10"}) {
+		t.Errorf("cat foo/file | head -n 3 | wc printed %q", got)
+	}
+	// The long lines of ls -la depend on the system, so sh, run on the same
+	// files, says what to expect.
+	line := `ls -la foo | tail -n 5 | head -n 3 | grep "file"`
+	sh := exec.Command("/bin/sh", "-c", line)
+	sh.Dir, sh.Env = dir, shellEnv()
+	out, err := sh.Output()
+	if err != nil || !strings.Contains(string(out), "file") {
+		t.Fatalf("sh -c %q: %v %q", line, err, out)
+	}
+	s.expect(line, strings.Split(strings.TrimSpace(string(out)), "\n")...)
+}
+
+// History.
+
+func TestHistory(t *testing.T) {
+	t.Parallel()
+	s := startShell(t, t.TempDir())
+	s.expect("type history", "history is a shell builtin")
 }
 
 // The pseudo-terminal.

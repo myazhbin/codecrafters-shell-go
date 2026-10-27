@@ -23,6 +23,7 @@ var builtInCommands = map[string]bool{
 	"cd":       true,
 	"complete": true,
 	"jobs":     true,
+	"history":  true,
 }
 
 // completers maps a command name to the program registered with complete -C to
@@ -324,6 +325,8 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 		}
 	case "jobs":
 		reapJobs(stdout, true)
+	case "history":
+		// The shell keeps no history yet, so there's nothing to list.
 	}
 	return false
 }

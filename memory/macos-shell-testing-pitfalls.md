@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Testing this shell on the user's Mac (macOS 15). src/main_test.go already works around all of these:
+Testing this shell on the user's Mac (macOS 15). app/main_test.go already works around all of these:
 - Copies of system binaries such as /bin/cat placed in another folder are killed with SIGKILL (kernel log: "AMFI: Launch Constraint Violation"). Use a `#!/bin/sh` wrapper (`exec cat "$@"`) or a self-built binary instead.
 - A pty test harness must keep reading the terminal's output until the shell exits. Otherwise, after a /bin/sh script has run, the shell hangs in the kernel while closing the terminal on `exit` (unkillable, hidden from ps).
 - Background jobs (`sleep 500 &`) hold the pty open after the shell exits, so a harness waiting for the terminal to close stalls until they end. The tests kill the shell's process group, which its jobs are in.
