@@ -349,41 +349,55 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 	case "jobs":
 		reapJobs(stdout, true)
 	case "history":
-		if len(args) > 1 && args[1] == "-r" {
-			// As in bash: the file is $HISTFILE unless one is named, its empty
-			// lines are skipped, a file that can't be read adds nothing, without
-			// a word, and the Up arrow can recall the lines added.
-			file := os.Getenv("HISTFILE")
-			if len(args) > 2 {
-				file = args[2]
-			}
-			if file == "" {
-				_, _ = fmt.Fprintln(stderr, "history: HISTFILE: parameter null or not set")
-				break
-			}
+		runHistory(args[1:], stdout, stderr)
+	}
+	return false
+}
+
+// runHistory runs the history builtin with args. With none, it lists the
+// whole history, numbered from 1, and with a number n, just the last n
+// entries. As in bash, -r adds the lines of a file to history, skipping empty
+// ones, and -w writes history to a file, a line per entry, replacing what the
+// file held or creating it readable only by its owner. The file is $HISTFILE
+// unless one is named, and one that can't be read or written is passed over
+// without a word.
+func runHistory(args []string, stdout, stderr io.Writer) {
+	if len(args) > 0 && (args[0] == "-r" || args[0] == "-w") {
+		file := os.Getenv("HISTFILE")
+		if len(args) > 1 {
+			file = args[1]
+		}
+		switch {
+		case file == "":
+			_, _ = fmt.Fprintln(stderr, "history: HISTFILE: parameter null or not set")
+		case args[0] == "-r":
 			data, _ := os.ReadFile(file)
 			for _, line := range strings.Split(string(data), "\n") {
 				if line = strings.TrimSuffix(line, "\r"); line != "" {
 					addHistory(line)
 				}
 			}
-			break
-		}
-		first := 0 // the index of the first entry to list
-		if len(args) > 1 {
-			// As in bash, a number n lists just the last n entries.
-			n, err := strconv.Atoi(args[1])
-			if err != nil || n < 0 {
-				_, _ = fmt.Fprintln(stderr, "history: "+args[1]+": numeric argument required")
-				break
+		default:
+			var lines strings.Builder
+			for _, line := range history {
+				lines.WriteString(line + "\n")
 			}
-			first = max(len(history)-n, 0)
+			_ = os.WriteFile(file, []byte(lines.String()), 0o600)
 		}
-		for i := first; i < len(history); i++ {
-			_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, history[i])
-		}
+		return
 	}
-	return false
+	first := 0 // the index of the first entry to list
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 0 {
+			_, _ = fmt.Fprintln(stderr, "history: "+args[0]+": numeric argument required")
+			return
+		}
+		first = max(len(history)-n, 0)
+	}
+	for i := first; i < len(history); i++ {
+		_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, history[i])
+	}
 }
 
 // runPipeline runs commands as a pipeline: each one's standard output goes

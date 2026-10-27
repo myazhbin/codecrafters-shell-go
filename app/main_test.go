@@ -582,6 +582,32 @@ func TestHistory(t *testing.T) {
 			"    6  history -r",
 			"    7  history 3")
 	})
+	t.Run("write to a file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file := filepath.Join(dir, "history") // not there yet
+		s := startShell(t, dir)
+		s.expect("echo hello", "hello")
+		s.expect("echo world", "world")
+		s.expect("history -w " + file)
+		want := "echo hello\necho world\nhistory -w " + file + "\n"
+		if got, err := os.ReadFile(file); err != nil || string(got) != want {
+			t.Errorf("history -w wrote %q (%v); want %q", got, err, want)
+		}
+		if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("history -w made %v (%v); want it readable only by its owner, as bash does", info.Mode(), err)
+		}
+		s.expect("history -w " + file) // writing again replaces what the file held
+		want += "history -w " + file + "\n"
+		if got, err := os.ReadFile(file); err != nil || string(got) != want {
+			t.Errorf("history -w wrote %q (%v) the second time; want %q", got, err, want)
+		}
+		s.expect("history -w " + filepath.Join(dir, "no", "such", "file")) // as in bash, without a word
+		// What history -w writes, history -r reads back.
+		fresh := startShell(t, dir)
+		fresh.expect("history -r " + file)
+		fresh.expect("history 3", "    4  history -w "+file, "    5  history -w "+file, "    6  history 3")
+	})
 	t.Run("the Up arrow", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
