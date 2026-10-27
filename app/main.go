@@ -309,9 +309,14 @@ func terminalWidth() int {
 
 // runCommand runs one command line, a builtin or a pipeline, and reports
 // whether the shell should exit. Only programs run in the background; a builtin
-// ending in & runs in the shell as usual.
+// ending in & runs in the shell as usual. A line with an error in a variable
+// runs nothing, where bash would still run the rest of a pipeline.
 func runCommand(line string) (exit bool) {
-	commands, background := parseCommand(line)
+	commands, background, err := parseCommand(line)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		return false
+	}
 	for _, c := range commands {
 		if len(c.args) == 0 {
 			if len(commands) > 1 {
@@ -751,12 +756,13 @@ func closeAll(files []*os.File) {
 // Quoted text is taken literally, except that inside double quotes a backslash
 // escapes ", \, $ and `. Outside quotes, a backslash makes the next character
 // literal. Adjacent pieces join into one argument. Outside single quotes, a $
-// and a variable's name stand for the variable's value. As in bash, outside
-// double quotes too, the value splits into arguments at spaces, tabs and
-// newlines, and an empty one makes none, except in declare's NAME=VALUE
-// arguments; and a redirection whose file then isn't one argument is
-// ambiguous.
-func parseCommand(line string) (commands []command, background bool) {
+// and a variable's name, or the name in braces to mark where it ends, stand
+// for the variable's value. As in bash, outside double quotes too, the value
+// splits into arguments at spaces, tabs and newlines, and an empty one makes
+// none, except in declare's NAME=VALUE arguments; and a redirection whose file
+// then isn't one argument is ambiguous. Braces holding anything but a name are
+// an error, as variableAt says.
+func parseCommand(line string) (commands []command, background bool, err error) {
 	var cur command         // the command being parsed
 	var words []string      // the arguments the word being parsed has split into so far
 	var arg strings.Builder // the one it goes on with
@@ -809,9 +815,17 @@ func parseCommand(line string) (commands []command, background bool) {
 			escaped, plain = true, false
 		case quote != 0 && r == quote:
 			quote = 0
-		case r == '$' && quote != '\'' && leadingName.MatchString(line[i+1:]):
-			name := leadingName.FindString(line[i+1:])
-			skip = i + 1 + len(name)
+		case r == '$' && quote != '\'':
+			name, length, err := variableAt(line[i+1:])
+			if err != nil {
+				return nil, false, err
+			}
+			if length == 0 {
+				arg.WriteRune(r) // no name follows, so it's just a $
+				inArg = true
+				break
+			}
+			skip = i + 1 + length
 			plain = false
 			value := variables[name].value
 			if quote != 0 || assignment {
@@ -869,7 +883,26 @@ func parseCommand(line string) (commands []command, background bool) {
 		}
 	}
 	endArg(len(line))
-	return append(commands, cur), background
+	return append(commands, cur), background, nil
+}
+
+// variableAt returns the name of the variable that s, the text after a $,
+// refers to, at its start or in braces, and the length of the reference, which
+// is 0 when there's none. As in bash, braces that hold anything but a name, or
+// aren't closed, are an error.
+func variableAt(s string) (name string, length int, err error) {
+	if !strings.HasPrefix(s, "{") {
+		name = leadingName.FindString(s)
+		return name, len(name), nil
+	}
+	end := strings.IndexByte(s, '}')
+	switch {
+	case end < 0:
+		return "", 0, errors.New("unexpected EOF while looking for matching `}'")
+	case !variableName.MatchString(s[1:end]):
+		return "", 0, errors.New("$" + s[:end+1] + ": bad substitution")
+	}
+	return s[1:end], end + 1, nil
 }
 
 // blank reports whether r is a character bash splits variables' values at: a

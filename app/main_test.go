@@ -168,6 +168,19 @@ echo out > $empty
 echo out > $Variable_1
 cat value
 `},
+		{"variables in braces", `declare Var1=foo Var2=bar Item=widget Foo1=Bar2 empty= spaced="  a   b  " y="a b"
+echo ${Var1}end
+echo ${Var1}and${Var2}
+printf '[%s]\n' stock_${Item}_id ${Foo1}
+printf '[%s]\n' "${Var1}x" '${Var1}' \${Var1} "\${Var1}" ${empty} "${empty}" x${spaced}y
+declare c=${y}
+declare -p c
+echo before ${} after
+echo ${a b} after
+echo "${1x}" after
+echo ${Var1}} {$Var1}
+echo hi > ${y}
+`},
 		{"no newline at the end", "echo one\necho two"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -832,6 +845,17 @@ done
 		"Arg #1: Value_1",
 		"Arg #2: Value_2")
 	s.expect("echo $Variable_1 $Variable_2", "Value_1 Value_2")
+	// Braces mark where the name ends.
+	s.expect("declare Item=widget")
+	s.expect("declare Foo1=Bar2")
+	s.expect("./custom_exe_1234 stock_${Item}_id ${Foo1}",
+		"Program was passed 3 args (including program name).",
+		"Arg #0 (program name): custom_exe_1234",
+		"Arg #1: stock_widget_id",
+		"Arg #2: Bar2")
+	// Bash would wait for the rest of the line, and say this at the end of
+	// the input, as for a line run with eval.
+	s.expect("echo ${Item after", "unexpected EOF while looking for matching `}'")
 }
 
 // The pseudo-terminal.
