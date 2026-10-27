@@ -41,6 +41,10 @@ type job struct {
 // jobs are the background jobs, oldest first.
 var jobs []job
 
+// history holds the command lines entered so far, oldest first, for the
+// history builtin. As in bash, blank lines aren't kept.
+var history []string
+
 func main() {
 	// Input from a file or pipe is read as plain lines, since readline would
 	// treat a Tab in it as a request to complete.
@@ -75,6 +79,9 @@ func main() {
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Error reading input:", err)
 			os.Exit(1)
+		}
+		if strings.TrimSpace(command) != "" {
+			history = append(history, command) // before it runs, so history lists itself
 		}
 		if runCommand(command) {
 			return
@@ -326,7 +333,9 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 	case "jobs":
 		reapJobs(stdout, true)
 	case "history":
-		// The shell keeps no history yet, so there's nothing to list.
+		for i, line := range history {
+			_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, line)
+		}
 	}
 	return false
 }

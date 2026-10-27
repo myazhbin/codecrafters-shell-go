@@ -528,7 +528,20 @@ func TestLongerPipelines(t *testing.T) {
 func TestHistory(t *testing.T) {
 	t.Parallel()
 	s := startShell(t, t.TempDir())
+	s.expect("echo hello", "hello")
+	s.expect("echo world", "world")
+	s.expect("invalid_command", "invalid_command: command not found")
+	s.expect("history", // listing itself too, as the tester wants and zsh wouldn't
+		"    1  echo hello",
+		"    2  echo world",
+		"    3  invalid_command",
+		"    4  history")
 	s.expect("type history", "history is a shell builtin")
+	// Blank lines and lines dropped with Ctrl-C aren't kept, as in bash.
+	s.expect("")
+	s.send("echo dropped")
+	s.interrupt()
+	s.expect("history | tail -n 2", "    5  type history", "    6  history | tail -n 2")
 }
 
 // The pseudo-terminal.
