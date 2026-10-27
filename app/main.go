@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -333,8 +334,18 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 	case "jobs":
 		reapJobs(stdout, true)
 	case "history":
-		for i, line := range history {
-			_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, line)
+		first := 0 // the index of the first entry to list
+		if len(args) > 1 {
+			// As in bash, a number n lists just the last n entries.
+			n, err := strconv.Atoi(args[1])
+			if err != nil || n < 0 {
+				_, _ = fmt.Fprintln(stderr, "history: "+args[1]+": numeric argument required")
+				break
+			}
+			first = max(len(history)-n, 0)
+		}
+		for i := first; i < len(history); i++ {
+			_, _ = fmt.Fprintf(stdout, "%5d  %s\n", i+1, history[i])
 		}
 	}
 	return false
