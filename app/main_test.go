@@ -127,6 +127,10 @@ nosuchcmd | cat | wc -l
 echo hi | nosuchcmd | wc -l
 type echo | cat | wc -l
 `},
+		{"declare", `declare -p missing_variable
+declare -p one two 2> err.txt
+cat err.txt
+`},
 		{"no newline at the end", "echo one\necho two"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -752,6 +756,7 @@ func TestDeclare(t *testing.T) {
 	t.Parallel()
 	s := startShell(t, t.TempDir())
 	s.expect("type declare", "declare is a shell builtin")
+	s.expect("declare -p missing_variable", "declare: missing_variable: not found")
 }
 
 // The pseudo-terminal.

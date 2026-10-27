@@ -379,6 +379,13 @@ func runBuiltin(c command, stdout *os.File) (exit bool) {
 		reapJobs(stdout, true)
 	case "history":
 		runHistory(args[1:], stdout, stderr)
+	case "declare":
+		// Nothing sets variables yet, so declare -p finds none of the names.
+		if len(args) > 1 && args[1] == "-p" {
+			for _, name := range args[2:] {
+				_, _ = fmt.Fprintln(stderr, "declare: "+name+": not found")
+			}
+		}
 	}
 	return false
 }
